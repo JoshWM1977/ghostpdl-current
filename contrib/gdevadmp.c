@@ -153,30 +153,55 @@ prn_device(gdev_prn_initialize_device_procs_mono_bg, "iwlq",	/* The print_page p
         0, 0, 0.5, 0,		/* margins */
         1, dmp_print_page);
 
-/* ------ Internal routines ------ */
-
+/* Device type macros */
 #define DMP 1
 #define IWLO 2
 #define IWHI 3
 #define IWLQ 4
 
+/* Device command macros */
+#define ESC "\033"
+#define CRLF "\r\n"
+#define LF "\n"
+#define FF "\f"
+
+#define ELITE "E"
+#define ELITEPROPORTIONAL "P"
+#define CONDENSED "q"
+
+#define LQPROPORTIONAL "a3"
+
+#define BIDIRECTIONAL "<"
+#define UNIDIRECTIONAL ">"
+
+#define LINEFEEDFWD "f"
+#define LINEFEEDREV "r"
+
+#define LINEHEIGHT "T"
+#define LINE8PI "B"
+
+#define BITMAPLO "G"
+#define BITMAPLORPT "V"
+#define BITMAPHI "C"
+#define BITMAPHIRPT "U"
+
+/* Error checking macro */
+#define CHECKERR(call, expect, error) code = call; if (code expect) { code = gs_note_error(error); goto xit; } 
+
 /* Send the page to the printer. */
 static int
 dmp_print_page(gx_device_printer *pdev, gp_file *gprn_stream)
 {
+        int code = gs_error_ok;
+		
         int dev_type;
 
         int line_size = gdev_mem_bytes_per_scan_line((gx_device *)pdev);
         /* Note that in_size is a multiple of 8. */
         int in_size = line_size * 8;
-        /* FIXME: It would be better if this device used the gp_file and the gp_ API,
-         * rather than this "back door" approach
-         */
-        FILE *prn_stream = gp_get_file(gprn_stream);
-
 
         byte *buf1 = (byte *)gs_malloc(pdev->memory, in_size, 1, "dmp_print_page(buf1)");
-        byte *buf2 = (byte *)gs_malloc(pdev->memory, in_size, 1, "dmp_print_page(buf2)");
+        byte* buf2 = (byte*)gs_malloc(pdev->memory, in_size, 1, "dmp_print_page(buf2)");
         byte *prn = (byte *)gs_malloc(pdev->memory, 3*in_size, 1, "dmp_print_page(prn)");
 
         byte *in = buf1;
@@ -186,16 +211,8 @@ dmp_print_page(gx_device_printer *pdev, gp_file *gprn_stream)
         /* Check allocations */
         if ( buf1 == 0 || buf2 == 0 || prn == 0 )
         {
-                if ( buf1 )
-                        gs_free(pdev->memory, (char *)buf1, in_size, 1,
-                        "dmp_print_page(buf1)");
-                if ( buf2 )
-                        gs_free(pdev->memory, (char *)buf2, in_size, 1,
-                        "dmp_print_page(buf2)");
-                if ( prn )
-                        gs_free(pdev->memory, (char *)prn, in_size, 1,
-                        "dmp_print_page(prn)");
-                return_error(gs_error_VMerror);
+                code = gs_note_error(gs_error_VMerror);
+                goto xit;
         }
 
         if ( pdev->y_pixels_per_inch == 216 )
@@ -207,22 +224,32 @@ dmp_print_page(gx_device_printer *pdev, gp_file *gprn_stream)
         else
                 dev_type = DMP;
 
-        /* Initialize the printer and reset the margins. */
+        /* Initialize the printer. */
 
-        fputs("\r\n\033>\033T16", prn_stream);
+        CHECKERR(gp_fputs(CRLF ESC UNIDIRECTIONAL ESC LINEHEIGHT "16",
+                        gprn_stream),
+                != 8,
+                gs_error_ioerror)
 
         switch(dev_type)
         {
         case IWLQ:
-                fputs("\033P\033a3", prn_stream);
+                CHECKERR(gp_fputs(ESC ELITEPROPORTIONAL ESC LQPROPORTIONAL,
+                                gprn_stream),
+                        != 5,
+                        gs_error_ioerror)
                 break;
         case IWHI:
         case IWLO:
-                fputs("\033P", prn_stream);
+                CHECKERR(gp_fputs(ESC ELITEPROPORTIONAL, gprn_stream),
+                        != 2,
+                        gs_error_ioerror)
                 break;
         case DMP:
         default:
-                fputs("\033q", prn_stream);
+                CHECKERR(gp_fputs(ESC CONDENSED, gprn_stream),
+                        != 2,
+                        gs_error_ioerror)
                 break;
         }
 
@@ -265,12 +292,23 @@ dmp_print_page(gx_device_printer *pdev, gp_file *gprn_stream)
                                 default: ltmp = lcnt; break;
                                 }
 
-                                if ((lnum+ltmp)>pdev->height)
-                                        memset(in+lcnt*line_size,0,line_size);
+                                if ((lnum + ltmp) > pdev->height)
+                                {
+                                        CHECKERR((int)memset(in + lcnt * line_size,
+                                                        0,
+                                                        line_size),
+                                                != (int)(in + lcnt * line_size),
+                                                gs_error_undefined)
+                                }
                                 else
-                                        gdev_prn_copy_scan_lines(pdev,
-                                        lnum+ltmp, in + line_size*(7 - lcnt),
-                                        line_size);
+                                {
+                                        CHECKERR((int)gdev_prn_copy_scan_lines(pdev,
+                                                        lnum + ltmp,
+                                                        in + line_size * (7 - lcnt),
+                                                        line_size),
+                                                != 1,
+                                                gs_error_rangecheck)
+                                }
                         }
 
                         out_end = out;
@@ -278,19 +316,19 @@ dmp_print_page(gx_device_printer *pdev, gp_file *gprn_stream)
                         in_end = inp + line_size;
                         for ( ; inp < in_end; inp++, out_end += 8 )
                         {
-                                gdev_prn_transpose_8x8(inp, line_size,
-                                out_end, 1);
+                                /* gdev_prn_transpose(...) returns void */
+                                gdev_prn_transpose_8x8(inp, line_size, out_end, 1);
                         }
 
                         out_end = out;
 
                         switch (dev_type)
                         {
-                        case IWLQ: prn_end = prn + count; break;
-                        case IWHI: prn_end = prn + in_size*count; break;
-                        case IWLO:
-                        case DMP:
-                        default: prn_end = prn; break;
+                                case IWLQ: prn_end = prn + count; break;
+                                case IWHI: prn_end = prn + in_size*count; break;
+                                case IWLO:
+                                case DMP:
+                                default: prn_end = prn; break;
                         }
 
                         while ( (int)(out_end-out) < in_size)
@@ -319,15 +357,29 @@ dmp_print_page(gx_device_printer *pdev, gp_file *gprn_stream)
                         if (prn_end != prn_blk)
                         {
                                 if ((prn_blk - prn) > 7)
-                                        fprintf(prn_stream,"\033U%04d%c%c%c",
-                                                (int)((prn_blk - prn)/3),
-                                                0, 0, 0);
+                                {
+                                        CHECKERR(gp_fprintf(gprn_stream,
+                                                        ESC BITMAPHIRPT "%04d%c%c%c",
+                                                        (int)((prn_blk - prn) / 3),
+                                                        0, 0, 0),
+                                                != 9,
+                                                gs_error_ioerror)
+                                }
                                 else
                                         prn_blk = prn;
-                                fprintf(prn_stream,"\033C%04d",
-                                        (int)((prn_end - prn_blk)/3));
-                                fwrite(prn_blk, 1, (int)(prn_end - prn_blk),
-                                        prn_stream);
+                                        
+                                CHECKERR(gp_fprintf(gprn_stream,
+                                                ESC BITMAPHI "%04d",
+                                                (int)((prn_end - prn_blk) / 3)),
+                                        != 6,
+                                        gs_error_ioerror)
+
+                                CHECKERR(gp_fwrite(prn_blk,
+                                                1,
+                                                (int)(prn_end - prn_blk),
+                                                gprn_stream),
+                                        != (int)(prn_end - prn_blk),
+                                        gs_error_ioerror)
                         }
                         break;
                 case IWHI:
@@ -342,21 +394,41 @@ dmp_print_page(gx_device_printer *pdev, gp_file *gprn_stream)
                                 if (prn_end != prn_blk)
                                 {
                                         if ((prn_blk - prn_tmp) > 7)
-                                                fprintf(prn_stream,
-                                                        "\033V%04d%c",
-                                                        (int)(prn_blk-prn_tmp),
-                                                         0);
+                                        {
+                                                CHECKERR(gp_fprintf(gprn_stream,
+                                                                ESC BITMAPLORPT "%04d%c",
+                                                                (int)(prn_blk - prn_tmp),
+                                                                0),
+                                                        != 7,
+                                                        gs_error_ioerror)
+                                        }
                                         else
                                                 prn_blk = prn_tmp;
-                                        fprintf(prn_stream,"\033G%04d",
-                                                (int)(prn_end - prn_blk));
-                                        fwrite(prn_blk, 1,
-                                                (int)(prn_end - prn_blk),
-                                                prn_stream);
+
+                                        CHECKERR(gp_fprintf(gprn_stream,
+                                                        ESC BITMAPLO "%04d",
+                                                        (int)(prn_end - prn_blk)),
+                                                != 6,
+                                                gs_error_ioerror)
+
+                                        CHECKERR(gp_fwrite(prn_blk,
+                                                        1,
+                                                        (int)(prn_end - prn_blk),
+                                                        gprn_stream),
+                                                != (int)(prn_end - prn_blk),
+                                                gs_error_ioerror)
                                 }
-                                if (!count) fputs("\033T01\r\n",prn_stream);
+                                if (!count)
+                                {
+                                        CHECKERR(gp_fputs(ESC LINEHEIGHT "01" CRLF,
+                                                        gprn_stream),
+                                                != 6,
+                                                gs_error_ioerror)
+                                }
                         }
-                        fputs("\033T15",prn_stream);
+                        CHECKERR(gp_fputs(ESC LINEHEIGHT "15", gprn_stream),
+                                != 4,
+                                gs_error_ioerror)
                         break;
                 case IWLO:
                 case DMP:
@@ -370,19 +442,36 @@ dmp_print_page(gx_device_printer *pdev, gp_file *gprn_stream)
                         if (prn_end != prn_blk)
                         {
                                 if ((prn_blk - prn) > 7)
-                                        fprintf(prn_stream,"\033V%04d%c",
-                                                (int)(prn_blk - prn), 0);
+                                {
+                                        CHECKERR(gp_fprintf(gprn_stream,
+                                                        ESC BITMAPLORPT "%04d%c",
+                                                        (int)(prn_blk - prn),
+                                                        0),
+                                                != 7,
+                                                gs_error_ioerror)
+                                }
                                 else
                                         prn_blk = prn;
-                                fprintf(prn_stream,"\033G%04d",
-                                        (int)(prn_end - prn_blk));
-                                fwrite(prn_blk, 1, (int)(prn_end - prn_blk),
-                                        prn_stream);
+
+                                CHECKERR(gp_fprintf(gprn_stream,
+                                                ESC BITMAPLO "%04d",
+                                                (int)(prn_end - prn_blk)),
+                                        != 6,
+                                        gs_error_ioerror)
+
+                                CHECKERR(gp_fwrite(prn_blk,
+                                                1,
+                                                (int)(prn_end - prn_blk),
+                                                gprn_stream),
+                                        != (int)(prn_end - prn_blk),
+                                        gs_error_ioerror)
                         }
                         break;
                 }
 
-                fputs("\r\n",prn_stream);
+                CHECKERR(gp_fputs(CRLF, gprn_stream),
+                        != 2,
+                        gs_error_ioerror)
 
                 switch (dev_type)
                 {
@@ -397,14 +486,25 @@ dmp_print_page(gx_device_printer *pdev, gp_file *gprn_stream)
         /* ImageWriter will skip a whole page if too close to end */
         /* so skip back more than an inch */
         if ( !(dev_type == DMP) )
-                fputs("\033T99\n\n\033r\n\n\n\n\033f", prn_stream);
+                CHECKERR(gp_fputs(ESC LINEHEIGHT "99" LF LF ESC LINEFEEDREV LF LF LF LF ESC LINEFEEDFWD,
+                                gprn_stream),
+                        != 14,
+                        gs_error_ioerror)
 
         /* Formfeed and Reset printer */
-        fputs("\033T16\f\033<\033B\033E", prn_stream);
-        fflush(prn_stream);
+        CHECKERR(gp_fputs(ESC LINEHEIGHT "16" FF ESC BIDIRECTIONAL ESC LINE8PI ESC ELITE,
+                        gprn_stream),
+                != 11,
+                gs_error_ioerror)
 
+        /* gp_fflush(...) returns void */
+        gp_fflush(gprn_stream);
+
+        code = gs_error_ok;
+
+        xit:
         gs_free(pdev->memory, (char *)prn, in_size, 1, "dmp_print_page(prn)");
         gs_free(pdev->memory, (char *)buf2, in_size, 1, "dmp_print_page(buf2)");
-        gs_free(pdev->memory, (char *)buf1, in_size, 1, "dmp_print_page(buf1)");
-        return 0;
+        gs_free(pdev->memory, (char*)buf1, in_size, 1, "dmp_print_page(buf1)");
+        return_error(code);
 }
