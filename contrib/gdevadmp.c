@@ -120,37 +120,37 @@ static dev_proc_print_page(dmp_print_page);
 /* Standard DMP device */
 const gx_device_printer far_data gs_appledmp_device =
 prn_device(gdev_prn_initialize_device_procs_mono_bg, "appledmp",	/* The print_page proc is compatible with allowing bg printing */
-        85,				/* width_10ths, 8.5" */
-        110,				/* height_10ths, 11" */
-        120, 72,			/* X_DPI, Y_DPI */
-        0, 0.5, 0.5, 0,		/* margins */
+        DEFAULT_WIDTH_10THS_US_LETTER,  /* width_10ths, 8.5" */
+        DEFAULT_HEIGHT_10THS_US_LETTER, /* height_10ths, 11" */
+        120, 72,                        /* X_DPI, Y_DPI */
+        0.25, 0.25, 0.25, 0.25,         /* margins */
         1, dmp_print_page);
 
 /*  lowrez Imagewriter device */
 const gx_device_printer far_data gs_iwlo_device =
 prn_device(gdev_prn_initialize_device_procs_mono_bg, "iwlo",	/* The print_page proc is compatible with allowing bg printing */
-        85,				/* width_10ths, 8.5" */
-        110,				/* height_10ths, 11" */
-        160, 72,			/* X_DPI, Y_DPI */
-        0, 0.5, 0.5, 0,		/* margins */
+        DEFAULT_WIDTH_10THS_US_LETTER,  /* width_10ths, 8.5" */
+        DEFAULT_HEIGHT_10THS_US_LETTER, /* height_10ths, 11" */
+        160, 72,                        /* X_DPI, Y_DPI */
+        0.25, 0.25, 0.25, 0.25,         /* margins */
         1, dmp_print_page);
 
 /*  hirez Imagewriter device */
 const gx_device_printer far_data gs_iwhi_device =
 prn_device(gdev_prn_initialize_device_procs_mono_bg, "iwhi",	/* The print_page proc is compatible with allowing bg printing */
-        85,				/* width_10ths, 8.5" */
-        110,				/* height_10ths, 11" */
-        160, 144,			/* X_DPI, Y_DPI */
-        0, 0.5, 0.5, 0,		/* margins */
+        DEFAULT_WIDTH_10THS_US_LETTER,  /* width_10ths, 8.5" */
+        DEFAULT_HEIGHT_10THS_US_LETTER, /* height_10ths, 11" */
+        160, 144,                       /* X_DPI, Y_DPI */
+        0.25, 0.25, 0.25, 0.25,         /* margins */
         1, dmp_print_page);
 
 /* LQ hirez Imagewriter device */
 const gx_device_printer far_data gs_iwlq_device =
 prn_device(gdev_prn_initialize_device_procs_mono_bg, "iwlq",	/* The print_page proc is compatible with allowing bg printing */
-        85,				/* width_10ths, 8.5" */
-        110,				/* height_10ths, 11" */
-        320, 216,
-        0, 0, 0.5, 0,		/* margins */
+        DEFAULT_WIDTH_10THS_US_LETTER,  /* width_10ths, 8.5" */
+        DEFAULT_HEIGHT_10THS_US_LETTER, /* height_10ths, 11" */
+        320, 216,                       /* X_DPI, Y_DPI */
+        0.25, 0.25, 0.25, 0.25,         /* margins */
         1, dmp_print_page);
 
 /* Device type macros */
