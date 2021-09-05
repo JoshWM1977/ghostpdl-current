@@ -571,7 +571,7 @@ cmsBool CMSEXPORT cmsPlugin(cmsContext id, void* Plug_in)
 
             if (Plugin ->ExpectedVersion < LCMS2MT_VERSION_MIN ||
                 Plugin ->ExpectedVersion > LCMS2MT_VERSION_MAX) {
-                cmsSignalError(id, cmsERROR_UNKNOWN_EXTENSION, "plugin version %d not in acceptable version range. LCMS2.art cannot use LCMS2 plugins!",
+                cmsSignalError(id, cmsERROR_UNKNOWN_EXTENSION, "plugin version %d not in acceptable version range. LCMS2MT cannot use LCMS2 plugins!",
                     Plugin ->ExpectedVersion);
                 return FALSE;
             }
@@ -1000,4 +1000,32 @@ cmsUInt32Number _cmsAdjustReferenceCount(cmsUInt32Number *rc, int delta)
     _cmsLeaveCriticalSectionPrimitive(&_cmsContextPoolHeadMutex);
 
     return refs;
+}
+
+// Use context mutex to provide thread-safe time
+cmsBool _cmsGetTime(struct tm* ptr_time)
+{
+    struct tm* t;
+#if defined(HAVE_GMTIME_R) || defined(HAVE__GMTIME64_S)
+    struct tm tm;
+#endif
+
+    time_t now = time(NULL);
+
+#ifdef HAVE_GMTIME_R
+    t = gmtime_r(&now, &tm);
+#elif defined(HAVE__GMTIME64_S)
+    t = _gmtime64_s(&tm, &now) == 0 ? &tm : NULL;
+#else
+    _cmsEnterCriticalSectionPrimitive(&_cmsContextPoolHeadMutex);
+    t = gmtime(&now);
+    _cmsLeaveCriticalSectionPrimitive(&_cmsContextPoolHeadMutex);
+#endif
+
+    if (t == NULL)
+        return FALSE;
+    else {
+        *ptr_time = *t;
+        return TRUE;
+    }
 }

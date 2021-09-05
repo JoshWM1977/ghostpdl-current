@@ -33,6 +33,7 @@
 #include "pdf_device.h"
 #include "pdf_annot.h"
 #include "pdf_check.h"
+#include "pdf_mark.h"
 
 #include "gscoord.h"        /* for gs_concat() and others */
 #include "gspaint.h"        /* For gs_erasepage() */
@@ -205,6 +206,7 @@ static int pdfi_get_media_size(pdf_context *ctx, pdf_dict *page_dict)
 
     code = pdfi_dict_get_type(ctx, page_dict, "MediaBox", PDF_ARRAY, (pdf_obj **)&default_media);
     if (code < 0) {
+        pdfi_set_warning(ctx, code, NULL, W_PDF_BAD_MEDIABOX, "pdfi_get_media_size", NULL);
         code = gs_erasepage(ctx->pgs);
         return 0;
     }
@@ -265,6 +267,7 @@ static int pdfi_set_media_size(pdf_context *ctx, pdf_dict *page_dict)
 
     code = pdfi_dict_get_type(ctx, page_dict, "MediaBox", PDF_ARRAY, (pdf_obj **)&default_media);
     if (code < 0) {
+        pdfi_set_warning(ctx, code, NULL, W_PDF_BAD_MEDIABOX, "pdfi_get_media_size", NULL);
         code = gs_erasepage(ctx->pgs);
         return 0;
     }
@@ -492,17 +495,18 @@ int pdfi_page_info(pdf_context *ctx, uint64_t page_num, pdf_info_t *info)
     info->boxes = BOX_NONE;
     code = pdfi_dict_get_type(ctx, page_dict, "MediaBox", PDF_ARRAY, (pdf_obj **)&a);
     if (code < 0)
-        goto done;
-    code = store_box(ctx, (float *)&info->MediaBox, a);
-    if (code < 0)
-        goto done;
-    info->boxes |= MEDIA_BOX;
-    pdfi_countdown(a);
-    a = NULL;
+        pdfi_set_warning(ctx, code, NULL, W_PDF_BAD_MEDIABOX, "pdfi_page_info", NULL);
+
+    if (code >= 0) {
+        code = store_box(ctx, (float *)&info->MediaBox, a);
+        if (code < 0)
+            goto done;
+        info->boxes |= MEDIA_BOX;
+        pdfi_countdown(a);
+        a = NULL;
+    }
 
     code = pdfi_dict_get_type(ctx, page_dict, "ArtBox", PDF_ARRAY, (pdf_obj **)&a);
-    if (code < 0 && code != gs_error_undefined)
-        goto done;
     if (code >= 0) {
         code = store_box(ctx, (float *)&info->ArtBox, a);
         if (code < 0)
@@ -513,8 +517,6 @@ int pdfi_page_info(pdf_context *ctx, uint64_t page_num, pdf_info_t *info)
     }
 
     code = pdfi_dict_get_type(ctx, page_dict, "CropBox", PDF_ARRAY, (pdf_obj **)&a);
-    if (code < 0 && code != gs_error_undefined)
-        goto done;
     if (code >= 0) {
         code = store_box(ctx, (float *)&info->CropBox, a);
         if (code < 0)
@@ -525,8 +527,6 @@ int pdfi_page_info(pdf_context *ctx, uint64_t page_num, pdf_info_t *info)
     }
 
     code = pdfi_dict_get_type(ctx, page_dict, "TrimBox", PDF_ARRAY, (pdf_obj **)&a);
-    if (code < 0 && code != gs_error_undefined)
-        goto done;
     if (code >= 0) {
         code = store_box(ctx, (float *)&info->TrimBox, a);
         if (code < 0)
@@ -537,8 +537,6 @@ int pdfi_page_info(pdf_context *ctx, uint64_t page_num, pdf_info_t *info)
     }
 
     code = pdfi_dict_get_type(ctx, page_dict, "BleedBox", PDF_ARRAY, (pdf_obj **)&a);
-    if (code < 0 && code != gs_error_undefined)
-        goto done;
     if (code >= 0) {
         code = store_box(ctx, (float *)&info->BleedBox, a);
         if (code < 0)
@@ -549,17 +547,13 @@ int pdfi_page_info(pdf_context *ctx, uint64_t page_num, pdf_info_t *info)
     }
     code = 0;
 
-    info->Rotate = 0;
+    dbl = info->Rotate = 0;
     code = pdfi_dict_get_number(ctx, page_dict, "Rotate", &dbl);
-    if (code < 0 && code != gs_error_undefined)
-        goto done;
     code = 0;
     info->Rotate = dbl;
 
     dbl = info->UserUnit = 1;
     code = pdfi_dict_get_number(ctx, page_dict, "UserUnit", &dbl);
-    if (code < 0 && code != gs_error_undefined)
-        goto done;
     code = 0;
     info->UserUnit = dbl;
 
@@ -691,6 +685,9 @@ static int setup_page_DefaultSpaces(pdf_context *ctx, pdf_dict *page_dict)
     /* First off, discard any dangling Default* colour spaces, just in case. */
     release_page_DefaultSpaces(ctx);
 
+    if (ctx->args.NOSUBSTDEVICECOLORS)
+        return 0;
+
     /* Create any required DefaultGray, DefaultRGB or DefaultCMYK
      * spaces.
      */
@@ -778,6 +775,7 @@ int pdfi_page_render(pdf_context *ctx, uint64_t page_num, bool init_graphics)
     }
 
     pdfi_device_set_flags(ctx);
+
     code = pdfi_check_page(ctx, page_dict, init_graphics);
     if (code < 0)
         goto exit2;
@@ -830,6 +828,9 @@ int pdfi_page_render(pdf_context *ctx, uint64_t page_num, bool init_graphics)
          */
         pdfi_get_media_size(ctx, page_dict);
     }
+
+    /* Write the various CropBox, TrimBox etc to the device */
+    pdfi_write_boxes_pdfmark(ctx, page_dict);
 
     code = setup_page_DefaultSpaces(ctx, page_dict);
     if (code < 0)

@@ -112,6 +112,11 @@ typedef enum pdf_warning_e {
     W_PDF_TYPECHECK,
     W_PDF_BAD_TRAILER,
     W_PDF_ANNOT_ERROR,
+    W_PDF_BAD_ICC_PROFILE_LINK,
+    W_PDF_OVERFLOW_REAL,
+    W_PDF_INVALID_REAL,
+    W_PDF_DEVICEN_USES_ALL,
+    W_PDF_BAD_MEDIABOX,
     W_PDF_MAX_WARNING               /* Must be last entry, add new warnings immediately before this and update pdf_warning_strings in ghostpdf.c */
 } pdf_warning;
 
@@ -187,6 +192,7 @@ typedef struct cmd_args_s {
     bool renderttnotdef;
     bool pdfinfo;
     bool UsePDFX3Profile;
+    bool NOSUBSTDEVICECOLORS;
     bool ditherppi;
     int PDFX3Profile_num;
     char *UseOutputIntent;

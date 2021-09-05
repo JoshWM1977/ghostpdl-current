@@ -30,6 +30,7 @@
 #include "pdf_misc.h"
 #include "pdf_optcontent.h"
 #include "stream.h"     /* for stell() */
+#include "gsicc_cache.h"
 
 #include "gspath2.h"
 #include "gsiparm4.h"
@@ -880,8 +881,23 @@ pdfi_data_image_params(pdf_context *ctx, pdfi_image_info_t *info,
             minval = 0.0;
             maxval = (float)((1 << info->BPC) - 1);
         } else {
-            minval = 0.0;
-            maxval = 1.0;
+            bool islab = false;
+
+            if (pcs && pcs->cmm_icc_profile_data != NULL)
+                islab = pcs->cmm_icc_profile_data->islab;
+
+            if(islab) {
+                pim->Decode[0] = 0.0;
+                pim->Decode[1] = 100.0;
+                pim->Decode[2] = pcs->cmm_icc_profile_data->Range.ranges[1].rmin;
+                pim->Decode[3] = pcs->cmm_icc_profile_data->Range.ranges[1].rmax;
+                pim->Decode[4] = pcs->cmm_icc_profile_data->Range.ranges[2].rmin;
+                pim->Decode[5] = pcs->cmm_icc_profile_data->Range.ranges[2].rmax;
+                return 0;
+            } else {
+                minval = 0.0;
+                maxval = 1.0;
+            }
         }
         for (i=0; i<comps*2; i+=2) {
             pim->Decode[i] = minval;
@@ -1023,19 +1039,36 @@ static int
 pdfi_image_setup_trans(pdf_context *ctx, pdfi_trans_state_t *state)
 {
     int code;
+    gs_rect bbox;
 
+    /* We need to create a bbox in order to pass it to the transparency setup,
+     * which (potentially, at least, uses it to set up a transparency group.
+     * Setting up a 1x1 path, and establishing it's BBox will work, because
+     * the image scaling is already in place. We don't want to disturb the
+     * graphics state, so do this inside a gsave/grestore pair.
+     */
     code = pdfi_gsave(ctx);
     if (code < 0)
         return code;
+
+    code = gs_newpath(ctx->pgs);
+    if (code < 0)
+        goto exit;
     code = gs_moveto(ctx->pgs, 1.0, 1.0);
     if (code < 0)
         goto exit;
     code = gs_lineto(ctx->pgs, 0., 0.);
     if (code < 0)
         goto exit;
-    code = pdfi_trans_setup(ctx, state, TRANSPARENCY_Caller_Image);
- exit:
+
+    code = pdfi_get_current_bbox(ctx, &bbox, false);
+    if (code < 0)
+        goto exit;
+
     pdfi_grestore(ctx);
+
+    code = pdfi_trans_setup(ctx, state, &bbox, TRANSPARENCY_Caller_Image);
+ exit:
     return code;
 }
 
@@ -1631,9 +1664,84 @@ pdfi_do_image(pdf_context *ctx, pdf_dict *page_dict, pdf_dict *stream_dict, pdf_
 
     /* Set the colorspace */
     if (pcs) {
+        gs_color_space  *pcs1 = pcs;
+
         code = pdfi_gs_setcolorspace(ctx, pcs);
         if (code < 0)
             goto cleanupExit;
+
+        if (pcs->type->index == gs_color_space_index_Indexed)
+            pcs1 = pcs->base_space;
+
+        /* It is possible that we get no error returned from setting an
+         * ICC space, but that we are not able when rendering to create a link
+         * between the ICC space and the output device profile.
+         * The PostScript PDF interpreter sets the colour after setting the space, which
+         * (eventually) causes us to set the device colour, and that actually creates the
+         * link. This is apparntly the only way we can detect this error. Otherwise we
+         * would carry on until we tried to render the image, and that would fail with
+         * a not terribly useful error of -1. So here we try to set the device colour,
+         * for images in an ICC profile space. If that fails then we try to manufacture
+         * a Device space from the number of components in the profile.
+         * I do feel this is something we should be able to handle better!
+         */
+        if (pcs1->type->index == gs_color_space_index_ICC)
+        {
+            gs_client_color         cc;
+            int comp = 0;
+            pdf_obj *ColorSpace = NULL;
+
+            cc.pattern = 0;
+            for (comp = 0; comp < pcs1->cmm_icc_profile_data->num_comps;comp++)
+                cc.paint.values[comp] = 0;
+
+            code = gs_setcolor(ctx->pgs, &cc);
+            if (code < 0)
+                goto cleanupExit;
+
+            code = gx_set_dev_color(ctx->pgs);
+            if (code < 0) {
+                pdfi_set_warning(ctx, 0, NULL, W_PDF_BAD_ICC_PROFILE_LINK, "pdfi_do_image", "Attempting to use profile /N to create a device colour space");
+                /* Possibly we couldn't create a link profile, soemthing wrong with the ICC profile, try to use a device space */
+                switch(pcs1->cmm_icc_profile_data->num_comps) {
+                    case 1:
+                        code = pdfi_name_alloc(ctx, (byte *)"DeviceGray", 10, &ColorSpace);
+                        if (code < 0)
+                            goto cleanupExit;
+                        pdfi_countup(ColorSpace);
+                        break;
+                    case 3:
+                        code = pdfi_name_alloc(ctx, (byte *)"DeviceRGB", 9, &ColorSpace);
+                        if (code < 0)
+                            goto cleanupExit;
+                        pdfi_countup(ColorSpace);
+                        break;
+                    case 4:
+                        code = pdfi_name_alloc(ctx, (byte *)"DeviceCMYK", 10, &ColorSpace);
+                        if (code < 0)
+                            goto cleanupExit;
+                        pdfi_countup(ColorSpace);
+                        break;
+                    default:
+                        code = gs_error_unknownerror;
+                        goto cleanupExit;
+                        break;
+                }
+                if (pcs != NULL)
+                    rc_decrement_only_cs(pcs, "pdfi_do_image");
+                /* At this point ColorSpace is either a string we just made, or the one from the Image */
+                code = pdfi_create_colorspace(ctx, ColorSpace,
+                                  image_info.stream_dict, image_info.page_dict,
+                                  &pcs, image_info.inline_image);
+                pdfi_countdown(ColorSpace);
+                if (code < 0)
+                    goto cleanupExit;
+
+                code = pdfi_gs_setcolorspace(ctx, pcs);
+                if (code < 0)
+                    goto cleanupExit;
+            }
+        }
     }
 
     /* Make a fake SMask dict if needed for JPXDecode */
