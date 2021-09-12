@@ -190,6 +190,12 @@ prn_device_margins_body(gx_device_admp, admp_initialize_device_procs, "iwlq",	/*
 #define IWHI 3
 #define IWLQ 4
 
+/* Device resolution macros */
+#define H120V72 1
+#define H160V72 2
+#define H160V144 3
+#define H320V216 4
+
 /* Device command macros */
 #define ESC "\033"
 #define CRLF "\r\n"
@@ -258,7 +264,8 @@ static int
 admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
 {
         int code = gs_error_ok;
-		
+
+        int dev_rez;
         int dev_type;
 
         int line_size = gdev_mem_bytes_per_scan_line((gx_device *)pdev);
@@ -280,14 +287,23 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                 goto xit;
         }
 
-        if ( pdev->y_pixels_per_inch == 216 )
+        if (strcmp(pdev->dname, "iwlq") == 0)
                 dev_type = IWLQ;
-        else if ( pdev->y_pixels_per_inch == 144 )
+        else if (strcmp(pdev->dname, "iwhi") == 0)
                 dev_type = IWHI;
-        else if ( pdev->x_pixels_per_inch == 160 )
+        else if (strcmp(pdev->dname, "iwlo") == 0)
                 dev_type = IWLO;
         else
                 dev_type = DMP;
+
+        if (pdev->y_pixels_per_inch == 216)
+                dev_rez = H320V216;
+        else if (pdev->y_pixels_per_inch == 144)
+                dev_rez = H160V144;
+        else if (pdev->x_pixels_per_inch == 160)
+                dev_rez = H160V72;
+        else
+                dev_rez = H120V72;
 
         /* Initialize the printer. */
 
@@ -306,21 +322,21 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                         gs_error_ioerror)
         }
 
-        switch(dev_type)
+        switch (dev_rez)
         {
-        case IWLQ:
+        case H320V216:
                 CHECKERR(gp_fputs(ESC ELITEPROPORTIONAL ESC LQPROPORTIONAL,
                                 gprn_stream),
                         != 5,
                         gs_error_ioerror)
                 break;
-        case IWHI:
-        case IWLO:
+        case H160V144:
+        case H160V72:
                 CHECKERR(gp_fputs(ESC ELITEPROPORTIONAL, gprn_stream),
                         != 2,
                         gs_error_ioerror)
                 break;
-        case DMP:
+        case H120V72:
         default:
                 CHECKERR(gp_fputs(ESC CONDENSED, gprn_stream),
                         != 2,
@@ -345,12 +361,12 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
  * scan line in reverse order.
  */
 
-                switch (dev_type)
+                switch (dev_rez)
                 {
-                case IWLQ: passes = 3; break;
-                case IWHI: passes = 2; break;
-                case IWLO:
-                case DMP:
+                case H320V216: passes = 3; break;
+                case H160V144: passes = 2; break;
+                case H160V72:
+                case H120V72:
                 default: passes = 1; break;
                 }
 
@@ -358,12 +374,12 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                 {
                         for (lcnt=0; lcnt<8; lcnt++)
                         {
-                                switch(dev_type)
+                                switch (dev_rez)
                                 {
-                                case IWLQ: ltmp = lcnt + 8*count; break;
-                                case IWHI: ltmp = 2*lcnt + count; break;
-                                case IWLO:
-                                case DMP:
+                                case H320V216: ltmp = lcnt + 8 * count; break;
+                                case H160V144: ltmp = 2 * lcnt + count; break;
+                                case H160V72:
+                                case H120V72:
                                 default: ltmp = lcnt; break;
                                 }
 
@@ -397,26 +413,26 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
 
                         out_end = out;
 
-                        switch (dev_type)
+                        switch (dev_rez)
                         {
-                                case IWLQ: prn_end = prn + count; break;
-                                case IWHI: prn_end = prn + in_size*count; break;
-                                case IWLO:
-                                case DMP:
+                                case H320V216: prn_end = prn + count; break;
+                                case H160V144: prn_end = prn + in_size * count; break;
+                                case H160V72:
+                                case H120V72:
                                 default: prn_end = prn; break;
                         }
 
                         while ( (int)(out_end-out) < in_size)
                         {
                                 *prn_end = *(out_end++);
-                                if ((dev_type) == IWLQ) prn_end += 3;
+                                if (dev_rez == H320V216) prn_end += 3;
                                 else prn_end++;
                         }
                 }
 
-                switch (dev_type)
+                switch (dev_rez)
                 {
-                case IWLQ:
+                case H320V216:
                         prn_blk = prn;
                         prn_end = prn_blk + in_size * 3;
                         while (prn_end > prn && prn_end[-1] == 0 &&
@@ -457,7 +473,7 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                                         gs_error_ioerror)
                         }
                         break;
-                case IWHI:
+                case H160V144:
                         for (count = 0; count < 2; count++)
                         {
                                 prn_blk = prn_tmp = prn + in_size*count;
@@ -505,8 +521,8 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                                 != 4,
                                 gs_error_ioerror)
                         break;
-                case IWLO:
-                case DMP:
+                case H160V72:
+                case H120V72:
                 default:
                         prn_blk = prn;
                         prn_end = prn_blk + in_size;
@@ -548,12 +564,12 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                         != 2,
                         gs_error_ioerror)
 
-                switch (dev_type)
+                switch (dev_rez)
                 {
-                        case IWLQ: lnum += 24 ; break;
-                        case IWHI: lnum += 16 ; break;
-                        case IWLO:
-                        case DMP:
+                        case H320V216: lnum += 24; break;
+                        case H160V144: lnum += 16; break;
+                        case H160V72:
+                        case H120V72:
                         default: lnum += 8 ; break;
                 }
         }
@@ -561,10 +577,12 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
         /* ImageWriter will skip a whole page if too close to end */
         /* so skip back more than an inch */
         if ( !(dev_type == DMP) )
+                {
                 CHECKERR(gp_fputs(ESC LINEHEIGHT "99" LF LF ESC LINEFEEDREV LF LF LF LF ESC LINEFEEDFWD,
                                 gprn_stream),
                         != 14,
                         gs_error_ioerror)
+                }
 
         /* Formfeed and Reset printer */
         CHECKERR(gp_fputs(ESC LINEHEIGHT "16" FF ESC BIDIRECTIONAL ESC LINE8PI ESC ELITE,
