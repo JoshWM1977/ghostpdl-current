@@ -115,43 +115,74 @@
 #include "gdevprn.h"
 
 /* The device descriptors */
-static dev_proc_print_page(dmp_print_page);
+static dev_proc_put_params(admp_put_params);
+static dev_proc_get_params(admp_get_params);
+static dev_proc_print_page(admp_print_page);
 
-/* Standard DMP device */
-const gx_device_printer far_data gs_appledmp_device =
-prn_device(gdev_prn_initialize_device_procs_mono_bg, "appledmp",	/* The print_page proc is compatible with allowing bg printing */
+/* Device procedure initialization */
+static void
+admp_initialize_device_procs(gx_device* pdev)
+{
+        gdev_prn_initialize_device_procs_mono_bg(pdev);
+
+        set_dev_proc(pdev, get_params, admp_get_params);
+        set_dev_proc(pdev, put_params, admp_put_params);
+}
+
+/* Device structure */
+struct gx_device_admp_s {
+        gx_device_common;
+        gx_prn_device_common;
+        bool unidirectional;
+};
+
+typedef struct gx_device_admp_s gx_device_admp;
+
+/* Standard DMP device descriptor */
+gx_device_admp far_data gs_appledmp_device = {
+prn_device_margins_body(gx_device_admp, admp_initialize_device_procs, "appledmp",	/* The print_page proc is compatible with allowing bg printing */
         DEFAULT_WIDTH_10THS_US_LETTER,  /* width_10ths, 8.5" */
         DEFAULT_HEIGHT_10THS_US_LETTER, /* height_10ths, 11" */
         120, 72,                        /* X_DPI, Y_DPI */
-        0.25, 0.25, 0.25, 0.25,         /* margins */
-        1, dmp_print_page);
+        0, 0, 0.25, 0.25, 0.25, 0.25,   /* origin and margins */
+        1, 1, 1, 0, 2, 1,               /* maxcomp, depth, maxgray, maxcolor, numgray, numcolor */
+        admp_print_page),
+        0 };
 
-/*  lowrez Imagewriter device */
-const gx_device_printer far_data gs_iwlo_device =
-prn_device(gdev_prn_initialize_device_procs_mono_bg, "iwlo",	/* The print_page proc is compatible with allowing bg printing */
+/*  lowrez ImageWriter device descriptor */
+gx_device_admp far_data gs_iwlo_device = {
+prn_device_margins_body(gx_device_admp, admp_initialize_device_procs, "iwlo",	/* The print_page proc is compatible with allowing bg printing */
         DEFAULT_WIDTH_10THS_US_LETTER,  /* width_10ths, 8.5" */
         DEFAULT_HEIGHT_10THS_US_LETTER, /* height_10ths, 11" */
         160, 72,                        /* X_DPI, Y_DPI */
-        0.25, 0.25, 0.25, 0.25,         /* margins */
-        1, dmp_print_page);
+        0, 0, 0.25, 0.25, 0.25, 0.25,   /* origin and margins */
+        1, 1, 1, 0, 2, 1,               /* maxcomp, depth, maxgray, maxcolor, numgray, numcolor */
+        admp_print_page),
+        0 };
 
-/*  hirez Imagewriter device */
-const gx_device_printer far_data gs_iwhi_device =
-prn_device(gdev_prn_initialize_device_procs_mono_bg, "iwhi",	/* The print_page proc is compatible with allowing bg printing */
+/*  hirez ImageWriter device descriptor */
+gx_device_admp far_data gs_iwhi_device = {
+prn_device_margins_body(gx_device_admp, admp_initialize_device_procs, "iwhi",	/* The print_page proc is compatible with allowing bg printing */
         DEFAULT_WIDTH_10THS_US_LETTER,  /* width_10ths, 8.5" */
         DEFAULT_HEIGHT_10THS_US_LETTER, /* height_10ths, 11" */
         160, 144,                       /* X_DPI, Y_DPI */
-        0.25, 0.25, 0.25, 0.25,         /* margins */
-        1, dmp_print_page);
+        0, 0, 0.25, 0.25, 0.25, 0.25,   /* origin and margins */
+        1, 1, 1, 0, 2, 1,               /* maxcomp, depth, maxgray, maxcolor, numgray, numcolor */
+        admp_print_page),
+        0 };
 
-/* LQ hirez Imagewriter device */
-const gx_device_printer far_data gs_iwlq_device =
-prn_device(gdev_prn_initialize_device_procs_mono_bg, "iwlq",	/* The print_page proc is compatible with allowing bg printing */
+/* LQ hirez ImageWriter device descriptor */
+gx_device_admp far_data gs_iwlq_device = {
+prn_device_margins_body(gx_device_admp, admp_initialize_device_procs, "iwlq",	/* The print_page proc is compatible with allowing bg printing */
         DEFAULT_WIDTH_10THS_US_LETTER,  /* width_10ths, 8.5" */
         DEFAULT_HEIGHT_10THS_US_LETTER, /* height_10ths, 11" */
         320, 216,                       /* X_DPI, Y_DPI */
-        0.25, 0.25, 0.25, 0.25,         /* margins */
-        1, dmp_print_page);
+        0, 0, 0.25, 0.25, 0.25, 0.25,   /* origin and margins */
+        1, 1, 1, 0, 2, 1,              /* maxcomp, depth, maxgray, maxcolor, numgray, numcolor */
+        //dci_std_color(1,1),
+        //dci_color_black_and_white,
+        admp_print_page),
+        0 };
 
 /* Device type macros */
 #define DMP 1
@@ -188,9 +219,43 @@ prn_device(gdev_prn_initialize_device_procs_mono_bg, "iwlq",	/* The print_page p
 /* Error checking macro */
 #define CHECKERR(call, expect, error) code = call; if (code expect) { code = gs_note_error(error); goto xit; } 
 
+static int
+admp_get_params(gx_device* pdev, gs_param_list* plist)
+{
+        int code = gdev_prn_get_params(pdev, plist);
+
+        if (code < 0 ||
+                (code = param_write_bool(plist, "Unidirectional", &((gx_device_admp*)pdev)->unidirectional)) < 0
+                )
+                return code;
+
+        return code;
+}
+
+static int
+admp_put_params(gx_device* pdev, gs_param_list* plist)
+{
+        int code = 0;
+        bool unidirectional = ((gx_device_admp*)pdev)->unidirectional;
+        gs_param_name param_name;
+        int ecode = 0;
+
+        if ((code = param_read_bool(plist,
+                (param_name = "Unidirectional"),
+                &unidirectional)) < 0) {
+                param_signal_error(plist, param_name, ecode = code);
+        }
+        if (ecode < 0)
+                return code;
+
+        ((gx_device_admp*)pdev)->unidirectional = unidirectional;
+
+        return gdev_prn_put_params(pdev, plist);
+}
+
 /* Send the page to the printer. */
 static int
-dmp_print_page(gx_device_printer *pdev, gp_file *gprn_stream)
+admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
 {
         int code = gs_error_ok;
 		
@@ -200,9 +265,9 @@ dmp_print_page(gx_device_printer *pdev, gp_file *gprn_stream)
         /* Note that in_size is a multiple of 8. */
         int in_size = line_size * 8;
 
-        byte *buf1 = (byte *)gs_malloc(pdev->memory, in_size, 1, "dmp_print_page(buf1)");
-        byte* buf2 = (byte*)gs_malloc(pdev->memory, in_size, 1, "dmp_print_page(buf2)");
-        byte *prn = (byte *)gs_malloc(pdev->memory, 3*in_size, 1, "dmp_print_page(prn)");
+        byte *buf1 = (byte *)gs_malloc(pdev->memory, in_size, 1, "admp_print_page(buf1)");
+        byte* buf2 = (byte*)gs_malloc(pdev->memory, in_size, 1, "admp_print_page(buf2)");
+        byte *prn = (byte *)gs_malloc(pdev->memory, 3*in_size, 1, "admp_print_page(prn)");
 
         byte *in = buf1;
         byte *out = buf2;
@@ -226,10 +291,20 @@ dmp_print_page(gx_device_printer *pdev, gp_file *gprn_stream)
 
         /* Initialize the printer. */
 
-        CHECKERR(gp_fputs(CRLF ESC UNIDIRECTIONAL ESC LINEHEIGHT "16",
+        if (((gx_device_admp*)pdev)->unidirectional)
+        {
+                CHECKERR(gp_fputs(CRLF ESC UNIDIRECTIONAL ESC LINEHEIGHT "16",
+                                gprn_stream),
+                        != 8,
+                        gs_error_ioerror)
+        }
+        else
+        {
+                CHECKERR(gp_fputs(CRLF ESC BIDIRECTIONAL ESC LINEHEIGHT "16",
                         gprn_stream),
-                != 8,
-                gs_error_ioerror)
+                        != 8,
+                        gs_error_ioerror)
+        }
 
         switch(dev_type)
         {
@@ -503,8 +578,8 @@ dmp_print_page(gx_device_printer *pdev, gp_file *gprn_stream)
         code = gs_error_ok;
 
         xit:
-        gs_free(pdev->memory, (char *)prn, in_size, 1, "dmp_print_page(prn)");
-        gs_free(pdev->memory, (char *)buf2, in_size, 1, "dmp_print_page(buf2)");
-        gs_free(pdev->memory, (char*)buf1, in_size, 1, "dmp_print_page(buf1)");
+        gs_free(pdev->memory, (char *)prn, in_size, 1, "admp_print_page(prn)");
+        gs_free(pdev->memory, (char *)buf2, in_size, 1, "admp_print_page(buf2)");
+        gs_free(pdev->memory, (char*)buf1, in_size, 1, "admp_print_page(buf1)");
         return_error(code);
 }
