@@ -406,11 +406,14 @@ stack_param_enumerate(iparam_list * plist, gs_param_enumerator_t * penum,
     ref *stack_element;
 
     do {
+        if (index >= splist->count*2)
+            return 1;
         stack_element =
             ref_stack_index(splist->pstack, index + 1 + splist->skip);
         if (!stack_element)
             return 1;
-    } while (index += 2, !r_has_type(stack_element, t_name));
+        index += 2;
+    } while (!r_has_type(stack_element, t_name));
     *type = r_type(stack_element);
     code = ref_to_key(stack_element, key, plist);
     penum->intval = index;
@@ -454,7 +457,7 @@ dict_param_enumerate(iparam_list * plist, gs_param_enumerator_t * penum,
     index = dict_next(&pdlist->dict, index, elt);
     if (index < 0)
         return 1;
-    *type = r_type(&elt[1]);
+    *type = r_type(&elt[0]);
     code = ref_to_key(&elt[0], key, plist);
     penum->intval = index;
     return code;
@@ -526,7 +529,8 @@ static const gs_param_list_procs ref_read_procs =
     NULL,			/* requested */
     ref_param_read_get_policy,
     ref_param_read_signal_error,
-    ref_param_read_commit
+    ref_param_read_commit,
+    NULL
 };
 static int ref_param_read(iparam_list *, gs_param_name,
                            iparam_loc *, int);

@@ -158,22 +158,19 @@ pdfi_open_CIDFont_substitute_file(pdf_context * ctx, pdf_dict *font_dict, pdf_di
 
     if (fallback == true) {
         char fontfname[gp_file_name_sizeof];
-        const char *romfsprefix = "%rom%Resource/CIDFSubst/";
-        const int romfsprefixlen = strlen(romfsprefix);
+        const char *fsprefix = "CIDFSubst/";
+        const int fsprefixlen = strlen(fsprefix);
         const char *defcidfallack = "DroidSansFallback.ttf";
         const int defcidfallacklen = strlen(defcidfallack);
         stream *s;
         code = 0;
 
-        memcpy(fontfname, romfsprefix, romfsprefixlen);
-        memcpy(fontfname + romfsprefixlen, defcidfallack, defcidfallacklen);
-        fontfname[romfsprefixlen + defcidfallacklen] = '\0';
+        memcpy(fontfname, fsprefix, fsprefixlen);
+        memcpy(fontfname + fsprefixlen, defcidfallack, defcidfallacklen);
+        fontfname[fsprefixlen + defcidfallacklen] = '\0';
 
-        s = sfopen(fontfname, "r", ctx->memory);
-        if (s == NULL) {
-            code = gs_note_error(gs_error_invalidfont);
-        }
-        else {
+        code = pdfi_open_resource_file(ctx, fontfname, strlen(fontfname), &s);
+        if (code >= 0) {
             sfseek(s, 0, SEEK_END);
             *buflen = sftell(s);
             sfseek(s, 0, SEEK_SET);
@@ -332,8 +329,6 @@ pdfi_open_font_substitute_file(pdf_context *ctx, pdf_dict *font_dict, pdf_dict *
 {
     int code;
     char fontfname[gp_file_name_sizeof];
-    const char *romfsprefix = "%rom%Resource/Font/";
-    const int romfsprefixlen = strlen(romfsprefix);
     pdf_obj *basefont = NULL, *mapname;
     pdf_obj *fontname = NULL;
     stream *s;
@@ -381,21 +376,18 @@ pdfi_open_font_substitute_file(pdf_context *ctx, pdf_dict *font_dict, pdf_dict *
     }
     if (mapname->type == PDF_NAME) {
         pdf_name *mname = (pdf_name *) mapname;
-        if (romfsprefixlen + mname->length + 1 < gp_file_name_sizeof) {
-            memcpy(fontfname, romfsprefix, romfsprefixlen);
-            memcpy(fontfname + romfsprefixlen, mname->data, mname->length);
-            fontfname[romfsprefixlen + mname->length] = '\0';
+        if (mname->length + 1 < gp_file_name_sizeof) {
+            memcpy(fontfname, mname->data, mname->length);
+            fontfname[mname->length] = '\0';
         }
         else {
             return_error(gs_error_invalidfileaccess);
         }
     }
 
-    s = sfopen(fontfname, "r", ctx->memory);
-    if (s == NULL) {
-        code = gs_note_error(gs_error_undefinedfilename);
-    }
-    else {
+    code = pdfi_open_font_file(ctx, fontfname, strlen(fontfname), &s);
+    if (code >= 0) {
+        gs_const_string fname;
         if (basefont) {
             dmprintf(ctx->memory, "Loading font ");
             pdfi_emprint_font_name(ctx, (pdf_name *)basefont);
@@ -403,6 +395,11 @@ pdfi_open_font_substitute_file(pdf_context *ctx, pdf_dict *font_dict, pdf_dict *
         }
         else {
             dmprintf(ctx->memory, "Loading nameless font from ");
+        }
+        sfilename(s, &fname);
+        if (fname.size < gp_file_name_sizeof) {
+            memcpy(fontfname, fname.data, fname.size);
+            fontfname[fname.size] = '\0';
         }
         dmprintf1(ctx->memory, "%s.\n", fontfname);
 
@@ -1437,7 +1434,7 @@ int pdfi_init_font_directory(pdf_context *ctx)
 }
 
 /* Loads a (should be!) non-embedded font by name
-   Only currently works for the Type 1 font set from romfs.
+   Only currently works for Type 1 fonts set.
  */
 int pdfi_load_font_by_name_string(pdf_context *ctx, const byte *fontname, size_t length,
                                   pdf_obj **ppdffont)
@@ -1483,6 +1480,52 @@ int pdfi_load_font_by_name_string(pdf_context *ctx, const byte *fontname, size_t
     pdfi_countdown(fname);
     pdfi_countdown(fdict);
     return code;
+}
+
+/* Patch or create a new XUID based on the existing UID/XUID, a simple hash
+   of the input file name and the font dictionary object number.
+   This allows improved glyph cache efficiency, also ensures pdfwrite understands
+   which fonts are repetitions, and which are different.
+   Currently cannot return an error - if we can't allocate the new XUID values array,
+   we just skip it, and assume the font is compliant.
+ */
+int pdfi_font_generate_pseudo_XUID(pdf_context *ctx, pdf_dict *fontdict, gs_font_base *pfont)
+{
+    gs_const_string fn;
+    int i;
+    uint32_t hash = 0;
+    long *xvalues;
+    int xuidlen = 2;
+
+    sfilename(ctx->main_stream->s, &fn);
+    if (fn.size > 0 && fontdict->object_num != 0) {
+        for (i = 0; i < fn.size; i++) {
+            hash = ((((hash & 0xf8000000) >> 27) ^ (hash << 5)) & 0x7ffffffff) ^ fn.data[i];
+        }
+        hash = ((((hash & 0xf8000000) >> 27) ^ (hash << 5)) & 0x7ffffffff) ^ fontdict->object_num;
+        if (uid_is_XUID(&pfont->UID))
+            xuidlen += uid_XUID_size(&pfont->UID);
+        else if (uid_is_valid(&pfont->UID))
+            xuidlen++;
+
+        xvalues = (long *)gs_alloc_bytes(pfont->memory, xuidlen * sizeof(long), "pdfi_font_generate_pseudo_XUID");
+        if (xvalues == NULL) {
+            return 0;
+        }
+        xvalues[0] = 1000000; /* "Private" value */
+        xvalues[1] = hash;
+        if (uid_is_XUID(&pfont->UID)) {
+            for (i = 0; i < uid_XUID_size(&pfont->UID); i++) {
+                xvalues[i + 2] = uid_XUID_values(&pfont->UID)[i];
+            }
+            uid_free(&pfont->UID, pfont->memory, "pdfi_font_generate_pseudo_XUID");
+        }
+        else if (uid_is_valid(&pfont->UID))
+            xvalues[2] = pfont->UID.id;
+
+        uid_set_XUID(&pfont->UID, xvalues, xuidlen);
+    }
+    return 0;
 }
 
 /* Convenience function for using fonts created by

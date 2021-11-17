@@ -703,6 +703,24 @@ show_char_background(pcl_state_t * pcs, const gs_char * pbuff)
 }
 
 /*
+ * Set color and ctm for a font
+ */
+static int
+pcl_set_gstate_for_font(pcl_state_t *pcs, const gs_point *scale)
+{
+    int code;
+    code = pcl_set_drawing_color(pcs,
+                                 pcs->pattern_type,
+                                 pcs->current_pattern_id, false);
+    if (code >= 0)
+        code = pcl_set_graphics_state(pcs);
+    if (code < 0)
+        return code;
+    set_gs_font(pcs);
+    return gs_scale(pcs->pgs, scale->x, scale->y);
+}
+
+/*
  * get the advance width.
  */
 static int
@@ -824,12 +842,9 @@ pcl_show_chars_slow(pcl_state_t * pcs,
     gs_char chr, orig_chr;
     int code = 0;
     double width;
-    gs_point cpt;
     gs_point advance_vector;
     bool unstyled_substitution;
 
-    cpt.x = pcs->cap.x;
-    cpt.y = pcs->cap.y;
     width = pcs->last_width;
 
     while (get_next_char(pcs, &str, &size, &chr,
@@ -866,31 +881,29 @@ pcl_show_chars_slow(pcl_state_t * pcs,
          */
         if (!pcs->last_was_BS) {
             if (wrap) {
-                if ((use_rmargin && (cpt.x + width > rmargin)) ||
-                    (cpt.x + width > page_size)) {
-                    /* update the current position for the benefit of
-                       CR so it knows where to draw underlines if
-                       needed then restore the position.  NB don't
-                       like this business of mixing floats and ints -
-                       (pcs->cap and cpt). throughout this
-                       function. */
-                    pcs->cap.x = (coord) cpt.x;
-                    pcs->cap.y = (coord) cpt.y;
+                if ((use_rmargin && (pcs->cap.x + width > rmargin)) ||
+                    (pcs->cap.x + width > page_size)) {
                     code = pcl_do_CR(pcs);
                     if (code < 0)
                         return code;
                     code = pcl_do_LF(pcs);
                     if (code < 0)
                         return code;
-                    cpt.x = pcs->cap.x;
-                    cpt.y = pcs->cap.y;
+                    /* A LF can cause a page feed which in turn can
+                     * change the CTM, reapply the current font
+                     * scaling */
+                    if (pcl_page_marked(pcs) == false) {
+                        code = pcl_set_gstate_for_font(pcs, pscale);
+                        if (code < 0)
+                            return code;
+                    }
                     use_rmargin = true;
                 }
             } else {
-                if (use_rmargin && (cpt.x == rmargin))
+                if (use_rmargin && (pcs->cap.x == rmargin))
                     break;
-                else if (cpt.x >= page_size) {
-                    cpt.x = page_size;
+                else if (pcs->cap.x >= page_size) {
+                    pcs->cap.x = page_size;
                     break;
                 }
             }
@@ -902,7 +915,7 @@ pcl_show_chars_slow(pcl_state_t * pcs,
          * the character is printed, the current point is returned to the
          * prior point.
          */
-        tmp_x = cpt.x;
+        tmp_x = pcs->cap.x;
         if (pcs->last_was_BS) {
             /* hack alert.  It seems if the last width is large, we
                use the horizontal dimension of the page as a guess, the
@@ -916,7 +929,7 @@ pcl_show_chars_slow(pcl_state_t * pcs,
             else
                 tmp_x += (pcs->last_width - width) / 2;
         }
-        code = gs_moveto(pgs, tmp_x / pscale->x, cpt.y / pscale->y);
+        code = gs_moveto(pgs, tmp_x / pscale->x, pcs->cap.y / pscale->y);
         if (code < 0)
             return code;
 
@@ -947,18 +960,18 @@ pcl_show_chars_slow(pcl_state_t * pcs,
          * this is the case, go back to the original position.
          */
         if (pcs->last_was_BS) {
-            cpt.x += pcs->last_width;
+            pcs->cap.x += pcs->last_width;
             pcs->last_was_BS = false;
         } else
-            cpt.x += width;
+            pcs->cap.x += width;
 
         /* check for going beyond the margin if not wrapping */
         if (!wrap) {
-            if (use_rmargin && (cpt.x > rmargin)) {
-                cpt.x = rmargin;
+            if (use_rmargin && (pcs->cap.x > rmargin)) {
+                pcs->cap.x = rmargin;
                 break;
-            } else if (cpt.x >= page_size) {
-                cpt.x = page_size;
+            } else if (pcs->cap.x >= page_size) {
+                pcs->cap.x = page_size;
                 break;
             }
         }
@@ -973,10 +986,6 @@ pcl_show_chars_slow(pcl_state_t * pcs,
 
     /* record the last width */
     pcs->last_width = width;
-
-    /* update the current position */
-    pcs->cap.x = (coord) cpt.x;
-    pcs->cap.y = (coord) cpt.y;
 
     return code;
 }
@@ -1036,8 +1045,6 @@ pcl_font_scale(pcl_state_t * pcs, gs_point * pscale)
 int
 pcl_text(const byte * str, uint size, pcl_state_t * pcs, bool literal)
 {
-    gs_gstate *pgs = pcs->pgs;
-    gs_matrix user_ctm;
     gs_point scale;
     int code;
 
@@ -1052,19 +1059,10 @@ pcl_text(const byte * str, uint size, pcl_state_t * pcs, bool literal)
             return gs_rethrow_code(code);
     }
 
-    /* set up the graphic state */
-    code = pcl_set_drawing_color(pcs,
-                                 pcs->pattern_type,
-                                 pcs->current_pattern_id, false);
-    if (code >= 0)
-        code = pcl_set_graphics_state(pcs);
+    pcl_font_scale(pcs, &scale);
+    code = pcl_set_gstate_for_font(pcs, &scale);
     if (code < 0)
         return code;
-    set_gs_font(pcs);
-
-    gs_currentmatrix(pgs, &user_ctm);
-    pcl_font_scale(pcs, &scale);
-    gs_scale(pgs, scale.x, scale.y);
 
     /*
      * If floating underline is on, since we're about to print a real
@@ -1087,9 +1085,8 @@ pcl_text(const byte * str, uint size, pcl_state_t * pcs, bool literal)
     else
         pcs->font->allow_vertical_substitutes = false;
 
-    /* Print remaining characters, restore the ctm */
+    /* Print the characters. */
     code = pcl_show_chars_slow(pcs, &scale, str, size, literal);
-    gs_setmatrix(pgs, &user_ctm);
     if (code > 0)               /* shouldn't happen */
         code = gs_note_error(gs_error_invalidfont);
     return code;
