@@ -1,4 +1,4 @@
-/* Copyright (C) 2001-2021 Artifex Software, Inc.
+/* Copyright (C) 2001-2023 Artifex Software, Inc.
    All Rights Reserved.
 
    This software is provided AS-IS with no warranty, either express or
@@ -9,8 +9,8 @@
    of the license contained in the file LICENSE in this distribution.
 
    Refer to licensing information at http://www.artifex.com or contact
-   Artifex Software, Inc.,  1305 Grant Avenue - Suite 200, Novato,
-   CA 94945, U.S.A., +1(415)492-9861, for further information.
+   Artifex Software, Inc.,  39 Mesa Street, Suite 108A, San Francisco,
+   CA 94129, USA, for further information.
 */
 
 /* April 2021 - January 2023 (so far):
@@ -19,8 +19,9 @@
  * This is a draft or alpha release of version ][ of the Apple dot matrix
  * printer Ghostscript driver series.
  *
- * Support and inspiration from the folks on the Ghostscript developers list,
- * including (in no particular order): Chris, Ray , Ken, Robin and William.
+ * Thanks for support and inspiration to the folks on the Ghostscript
+ * developers list, including (in no particular order):
+ * Chris, Ray, Ken, Robin and William.
  *
  * This revision represents a major feature upgrade to the earlier drivers,
  * while retaining as much of the original code as practical.  Notable new
@@ -165,6 +166,7 @@
 #include "gdevplnx.h"
 #include "gdevppla.h"
 
+
  /* Device type macros */
 #define DMP 1
 #define IWLO 2
@@ -261,7 +263,7 @@ struct gx_device_admp_s {
         int colorinfo;
         int colorcoding;
         bool debug;
-        bool UsePlanarBuffer;       /* 0 if chunky buffer, 1 if planar */
+        bool UsePlanarBuffer;
 };
 
 typedef struct gx_device_admp_s gx_device_admp;
@@ -270,43 +272,41 @@ typedef struct gx_device_admp_s gx_device_admp;
 static dev_proc_put_params(admp_put_params);
 static dev_proc_get_params(admp_get_params);
 static dev_proc_print_page(admp_print_page);
-//static dev_proc_open_device(ppm_open);
-//static dev_proc_get_params(ppm_get_params);
-//static dev_proc_put_params(ppm_put_params);
+static dev_proc_open_device(admp_open);
 
-/*
 static int
-ppm_open(gx_device* pdev)
+admp_open(gx_device* pdev)
 {
-        outprintf(pdev->memory, "ppm_open()\n");
+        outprintf(pdev->memory, "admp_open()\n");
 
-        gx_device_admp* bdev = (gx_device_admp*)pdev;
-        int code;
+        if (((gx_device_admp*)pdev)->UsePlanarBuffer)
+        //if (pdev->color_info.num_components == 4)
+        {
+                int code;
 
-#ifdef TEST_PAD_AND_ALIGN
-        pdev->pad = 5;
-        pdev->log2_align_mod = 6;
-#endif
+                /*
+                gdev_prn_open_planar() devices:
+                - gdevcmykog.c:204
+                - gdevpbm.c:339
+                - gdevplan.c:396
+                - gdevplib.c:673
+                - gdevpsd.c:575
+                - gdevtsep.c:1211,1677
+                */
+                code = gdev_prn_open_planar(pdev, true);
+                if (code < 0)
+                        return code;
+                //pdev->color_info.separable_and_linear = GX_CINFO_SEP_LIN; // pbm, tsep1
+                //set_linear_color_bits_mask_shift(pdev); // pbm
 
-        code = gdev_prn_open_planar(pdev, bdev->UsePlanarBuffer);
-        while (pdev->child)
-                pdev = pdev->child;
 
-        bdev = (gx_device_admp*)pdev;
-
-        if (code < 0)
                 return code;
-        pdev->color_info.separable_and_linear = GX_CINFO_SEP_LIN;
-        set_linear_color_bits_mask_shift(pdev);
-        //bdev->uses_color = 0;
-        //bdev->color = 0;
-        
-        /* if (((gx_device_admp*)pdev)->color)
-                ppm_set_dev_procs(pdev);*/
-/*
-        return code;
+        }
+
+        return 0;
 }
 
+/*
 static int
 ppm_get_params(gx_device* pdev, gs_param_list* plist)
 {
@@ -426,16 +426,22 @@ admp_initialize_device_procs(gx_device* pdev)
 static void
 admp_initialize_device_procs_color(gx_device* pdev)
 {
-        gdev_prn_initialize_device_procs(pdev);
-
+        //gdev_prn_initialize_device_procs(pdev);
+        gdev_prn_initialize_device_procs_cmyk1(/*gx_device **/ pdev);
         //set_dev_proc(pdev, map_rgb_color, cmyk_1bit_map_cmyk_color);
         //set_dev_proc(pdev, map_color_rgb, NULL);
         //set_dev_proc(pdev, map_cmyk_color, cmyk_1bit_map_cmyk_color);
-        set_dev_proc(pdev, decode_color, cmyk_1bit_map_color_rgb);
-        set_dev_proc(pdev, encode_color, cmyk_1bit_map_cmyk_color);
+        //set_dev_proc(pdev, decode_color, cmyk_1bit_map_color_rgb);
+        //set_dev_proc(pdev, encode_color, cmyk_1bit_map_cmyk_color);
+
+        //set_dev_proc(pdev, map_cmyk_color, cmyk_1bit_map_cmyk_color);
+        //set_dev_proc(pdev, map_color_rgb, cmyk_1bit_map_color_rgb);
+        //set_dev_proc(pdev, encode_color, cmyk_1bit_map_cmyk_color);
+        //set_dev_proc(pdev, decode_color, cmyk_1bit_map_color_cmyk);
+
+        set_dev_proc(pdev, open_device, admp_open);
         set_dev_proc(pdev, get_params, admp_get_params);
         set_dev_proc(pdev, put_params, admp_put_params);
-        //set_dev_proc(pdev, open_device, ppm_open);
 }
 
 /* Standard DMP device descriptor */
@@ -478,11 +484,7 @@ prn_device_margins_body(gx_device_admp, admp_initialize_device_procs, "iwlq",	/*
         DEFAULT_HEIGHT_10THS_US_LETTER, /* height_10ths, 11" */
         320, 216,                       /* X_DPI, Y_DPI */
         0, 0, 0, 0, 0, 0,               /* origin and margins */
-// gx_device_color_info - gxdevcli.h:258
-//                                     /* maxcomp, depth, maxgray, maxcolor, numgray, numcolor */
-//      4, 4, 1, 1, 2, 2,              /* dci_macro(4,4) (also per pk[s]m[raw] device descriptor) */
-//      4, 1, 1, 0, 2, 1,              /* dci_macro(4,1) */
-        1, 1, 1, 0, 2, 1,              /* dci_macro(dci_black_and_white) */
+        1, 1, 1, 0, 2, 1,
         admp_print_page),
         /* colorbool,+ , directionbool, renderingmode,   colorinfo,   colorcoding, debug, UsePlanarBuffer */
                    0,1,             0,      GPCSL,  MONO, 0,     0,               0};
@@ -497,7 +499,9 @@ prn_device_margins_body(gx_device_admp, admp_initialize_device_procs_color, "iwl
 // gx_device_color_info - gxdevcli.h:258
 //                                     /* maxcomp, depth, maxgray, maxcolor, numgray, numcolor */
 //      4, 4, 1, 1, 2, 2,              /* dci_macro(4,4) (also per pk[s]m[raw] device descriptor) */
-        4, 1, 1, 0, 2, 1,              /* dci_macro(4,1) */
+//      4, 1, 1, 0, 2, 1,              /* dci_macro(4,1) */
+        4, 4, 1, 1, 2, 2,              /* per gdevbjc_ and gdevbmp - too many bits*/
+//      4, 1, 1, 1, 2, 2,              /* per me */
 //      1, 1, 1, 0, 2, 1,              /* dci_macro(dci_black_and_white) */
         admp_print_page),
         /* colorbool,+ , directionbool, renderingmode,   colorinfo,   colorcoding, debug, UsePlanarBuffer */
@@ -738,6 +742,7 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
         buf_in = (byte*)gs_malloc(pdev->memory, in_size_mono * pdev->color_info.num_components, 1, "admp_print_page(buf_in)");
         buf_out = (byte*)gs_malloc(pdev->memory, in_size_mono * pdev->color_info.num_components, 1, "admp_print_page(buf_out)");
         prn  = (byte*)gs_malloc(pdev->memory,  in_size_mono * 3, 1, "admp_print_page(prn)");
+        byte* prn_saved = prn;
 
         byte* in = buf_in;
         byte* out = buf_out;
@@ -833,6 +838,7 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                 int lcnt, ltmp;
                 int count, passes;
                 byte* prn_blk, * prn_end, * prn_tmp, * prn_orig;
+                byte* out_saved = out;
 
                 /* 8-dot tall bands per pass */
                 switch (dev_rez)
@@ -966,8 +972,8 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                                                 {
                                                         errprintf(pdev->memory, "code=%d,line_size_mono=%d\n", code, line_size_mono);
                                                         errprintf(pdev->memory, ERRGPCSL);
-                                                        code = gs_note_error(gs_error_rangecheck);
-                                                        goto xit;
+                                                        //code = gs_note_error(gs_error_rangecheck);
+                                                        //goto xit;
                                                 }
 
                                                 break;
@@ -976,7 +982,8 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                                         {
                                                 int foo = 0;
                                         }
-                                        if (((gx_device_admp*)pdev)->debug && lnum > 64) goto xit;
+                                        if (((gx_device_admp*)pdev)->debug && lnum > 64)
+                                                goto xit;
                                 }
                         } /* for lcnt */
 
@@ -1021,7 +1028,8 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                         */
                         out_end = out;
 
-                        byte* out_saved = out;
+                        out_saved = out;
+                        prn_saved = prn;
                         for (color = 0; color < pdev->color_info.num_components; color++)
                         {
 
@@ -1063,11 +1071,15 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                                 }
 
                                 //if (((gx_device_admp*)pdev)->debug) outprintf(pdev->memory, "color: %d; out_end: 0x%8x; out: 0x%8x;\n", color, out_end, out);
+                                int loops = 0;
                                 while ((int)(out_end - out) < in_size_mono)
                                 {
+                                        if (loops > in_size_mono)
+                                                break;
                                         *prn_end = *(out_end++);
                                         if (dev_rez == H320V216) prn_end += 3;
                                         else prn_end++;
+                                        loops++;
                                 }
                                 //if (((gx_device_admp*)pdev)->debug) outprintf(pdev->memory, "color: %d; out_end: 0x%8x; out: 0x%8x;\n", color, out_end, out);
                         } /* for color, first */
@@ -1077,6 +1089,8 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
 
                 for (color = 0 ; color < pdev->color_info.num_components; color++)
                 {
+                        outprintf(pdev->memory, "color2: %d\n", color);
+                        
                         /* Select ribbon color */
                         if (gx_device_has_color(pdev))
                         {
@@ -1150,15 +1164,16 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                                                 /* set print-head position by sending a repeated all-zeros hirez bitmap */
                                                 /*code = */ gp_fprintf(gprn_stream,
                                                         ESC BITMAPHIRPT "%04d%c%c%c",
-                                                        (int)((prn_blk - prn) / 3),
+                                                        //(int)((prn_blk - prn) / 3),
+                                                        (int)(((prn_blk - prn) / 3) - (in_size_mono * color)),
                                                         0, 0, 0);
 
-                                                /*if (code != 9)
+                                                if (code != 3)
                                                 {
                                                         errprintf(pdev->memory, ERRPOSLQ);
-                                                        code = gs_note_error(gs_error_ioerror);
-                                                        goto xit;
-                                                }*/
+                                                        //code = gs_note_error(gs_error_ioerror);
+                                                        //goto xit;
+                                                }
                                         }
                                         else
                                                 prn_blk = prn;
@@ -1350,7 +1365,9 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                 case H120V72:
                 default: lnum += 8; break;
                 }
+
         } /* while lnum < pdev->height */
+        prn = prn_saved;
 
         /* Eject the page and reset the printer.
          *
@@ -1407,7 +1424,7 @@ xit:
         gs_free(pdev->memory, (char*)prn, in_size_mono * 3, 1, "admp_print_page(prn)");
         gs_free(pdev->memory, (char*)buf_out, in_size_mono * pdev->color_info.num_components, 1, "admp_print_page(buf_out)");
         gs_free(pdev->memory, (char*)buf_in, in_size_mono * pdev->color_info.num_components, 1, "admp_print_page(buf_in)");
-        gs_free(pdev->memory, (char*)buf_k, in_size_mono * 3, 1, "admp_print_page(buf_k)");
+//        gs_free(pdev->memory, (char*)buf_k, in_size_mono * 3, 1, "admp_print_page(buf_k)");
         if (gx_device_has_color(pdev))
         {
                 gs_free(pdev->memory, (char*)buf_m, in_size_mono * 3, 1, "admp_print_page(buf_m)");
