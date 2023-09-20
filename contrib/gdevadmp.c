@@ -13,42 +13,52 @@
    CA 94129, USA, for further information.
 */
 
-/* April 2021 - January 2023 (so far):
- * Ghostscript Apple Dot Matrix Printer / ImageWriter driver v2.0
+/* April 2021 - September 2023 in The Emerald City:
+ * ghostscript Apple Dot Matrix Printer / ImageWriter driver, version ][
  *
- * This is a draft or alpha release of version ][ of the Apple dot matrix
- * printer Ghostscript driver series.
+ * This is the pre-beta or pre-release of version ][ of the Apple dot-matrix
+ * printers driver for ghostscript -- it is not fully tested yet and could
+ * jam or even damage your printer.
  *
- * Thanks for support and inspiration to the folks on the Ghostscript
+ * Thanks for support and inspiration to the folks on the ghostscript
  * developers list, including (in no particular order):
- * Chris, Ray, Ken, Robin and William.
+ * Chris, Ray, Ken, Robin and William!
  *
- * This revision represents a major feature upgrade to the earlier drivers,
- * while retaining as much of the original code as practical.  Notable new
- * features include:
- * - Color support for the ImageWriter II and ImageWriter LQ
- *   (Not fully implemented.)
- * - User selectable rendering mode: gdev_prn_get_lines (experimental,
- *   -dRenderMode = 1) or gdev_prn_copy_scan_lines (standard,
- *   -dRenderMode = 0.)
- * - User selectable print-head directionality. (-dUnidirectional, bidirectional
- *   by default.)
+ * This release represents a major feature upgrade and overhaul, as compared 
+ * to the earlier drivers, while retaining as much of the original code as
+ * practical.  Notable changes and new features include:
+ * - Color support for the ImageWriter II and ImageWriter LQ!
+ * - New rendering call: gdev_prn_get_lines() based, instead of
+ *   gdev_prn_copy_scan_lines().
+ * - User selectable print-head directionality. (-dUNIDIRECTIONAL -- 
+ *   bidirectional by default.)
  * - Support for multiple paper bins on the ImageWriter LQ.
  *   (Not yet implemented.)
- * - Enhanced job end and printer reset functionality for
- *   ImageWriter and newer (-dPlus.)
+ * - Improved paper handling: rather than issuing a form-feed at the
+ *   end of a page, just line-feed through the entire length, instead.
+ * - Safer default margins and printer settings that match the documented
+ *   and recommended values.
  * - A more robust driver with better error checking and also
- *   better optimized for Ghostscript.
+ *   better optimized for ghostscript.
  * - Improved comments and printer command readability.
- * - Other internal changes.
+ * - Other minor and miscellaneos changes.
+ * 
+ * Known issues include:
+ * - Users can select unsupported color and resolution settings for their device.
+ *   Or to put another way, a DMP user could select color or H320V216 and get
+ *   unpredictable or even dangerous output.
  *
  * This driver release is part of the larger "Guide to Running Apple Dot Matrix
  * Printers with Windows and UN*X Clients, A", which is published at
  * http://jmoyer.nodomain.net/admp/.  See also the "Apple Dot Matrix Printers"
  * Facebook group at https://www.facebook.com/groups/appledotmatrixprinters.
  *
- * Josh Moyer (he/him) <JMoyer@NODOMAIN.NET>
- * http://www.nodomain.net/
+ *    _____    Josh Moyer (he/him) <JMoyer@NODOMAIN.NET>
+ *   | * * |   http://jmoyer.nodomain.net/
+ *   |*(*)*|   http://www.nodomain.net/
+ *    \ - /
+ *     \//     Love, Responsibility, Justice
+ *             Liebe, Verantwortung, Gerechtigkeit
  */
 
  /* Oct 2019 - April 2021, maintained by Mike Galatean
@@ -152,67 +162,38 @@
  */
 
 #include "gdevprn.h"
-#include "std.h"
-#include "string.h"
-
-/* From gdevpbm.c */
-#include "gdevprn.h"
-#include "gscdefs.h"
-#include "gscspace.h" /* For pnm_begin_typed_image(..) */
-#include "gxgetbit.h"
-#include "gxlum.h"
-#include "gxiparam.h" /* For pnm_begin_typed_image(..) */
-#include "gdevmpla.h"
-#include "gdevplnx.h"
-#include "gdevppla.h"
-
 
  /* Device type macros */
-#define DMP 1
-#define IWLO 2
-#define IWHI 3
+#define DMP 0
+#define IWLO 1
+#define IWHI 2
 #define IWLQ 4
 
 /* Device resolution macros */
-#define H120V72 1
-#define H160V72 2
-#define H160V144 3
-#define H320V216 4
+#define H120V72 8
+#define H160V72 16
+#define H160V144 32
+#define H320V216 64
 
 /* Device rendering modes */
 #define GPGL 1 /* gdev_prn_get_lines */
 #define GPCSL 0 /* gdev_prn_copy_scan_lines */
 
-/* Color coding modes */
-#define PKSMRAWPPM 0
-
-/* Color info modes */
-#define FOURBITCMYK 2
-#define ONEBITCMYK 1
-#define MONO 0
-
 /* Device command macros */
 #define ESC "\033"
 #define CR "\r"
 #define LF "\n"
-#define FF "\f"
-
-#define RESET "c"
 
 #define ELITE "E"
 #define ELITEPROPORTIONAL "P"
 #define CONDENSED "q"
-
 #define LQPROPORTIONAL "a3"
 
 #define BIDIRECTIONAL "<"
 #define UNIDIRECTIONAL ">"
 
-#define LINEFEEDFWD "f"
-#define LINEFEEDREV "r"
-
 #define LINEHEIGHT "T"
-#define LINE8PI "B"
+#define LINE6PI "A"
 
 #define BITMAPLO "G"
 #define BITMAPLORPT "V"
@@ -220,50 +201,45 @@
 #define BITMAPHIRPT "U"
 
 #define COLORSELECT "K"
-#define YELLOW "1"      /* (in the recommended order of printing for */
+#define YELLOW "1"      /* (in a recommended order of printing for */
 #define CYAN "3"       /* minimizing cross-band color contamination) */
 #define MAGENTA "2"
 #define BLACK "0"
 
 #define DRIVERNAME "gdevadmp"
-#define ERRALLOC DRIVERNAME ":Memory allocation failed.\n"
-#define ERRDEVTYPE DRIVERNAME ": Driver determination failed.\n"
-#define ERRDIRSELECT DRIVERNAME ": Printer initialization (directionality) failed.\n"
-#define ERRREZSELECT DRIVERNAME ": Printer initialization (resolution) failed.\n"
-#define ERRCOLORSELECT DRIVERNAME ": Printhead color positioning failed.\n"
-#define ERRBLANKLINE DRIVERNAME ": Blank-line generation failed.\n"
-#define ERRGPCSL DRIVERNAME ": Error getting scanline from rendering engine.\n"
-#define ERRNUMCOMP DRIVERNAME ": color_info.num_components out of range.\n"
-#define ERRGPGL DRIVERNAME ": gdev_prn_get_lines() returned unexpected values.\n"
 #define ERRADVNLQ DRIVERNAME ": Near letter quality vertical advance failure."
+#define ERRALLOC DRIVERNAME ": Memory allocation failed.\n"
+#define ERRCMD DRIVERNAME ": Command failure.\n"
 #define ERRCMDLQ DRIVERNAME ": Letter quality command failure.\n"
 #define ERRCMDNLQ DRIVERNAME ": Near letter quality command failure.\n"
-#define ERRCMD DRIVERNAME ": Command failure.\n"
-#define ERRDATLQ DRIVERNAME ": Letter quality data failure.\n"
-#define ERRDATNLQ DRIVERNAME ": Near letter quality data failure.\n"
-#define ERRDAT DRIVERNAME ": Data failure.\n"
-#define ERRLHNLQ DRIVERNAME ": Near letter quality line height failure."
-#define ERRPOSLQ DRIVERNAME ": Letter quality positionining failure.\n"
-#define ERRPOSNLQ DRIVERNAME ": Near letter quality positionining failure.\n"
-#define ERRPOS DRIVERNAME ": Positionining failure.\n"
+#define ERRCOLORSELECT DRIVERNAME ": Printhead color selection failed.\n"
 #define ERRCR DRIVERNAME ": Carriage return failed.\n"
 #define ERRCRLF DRIVERNAME ": Carriage return and line feed failed.\n"
-#define ERRRESETPLUS DRIVERNAME ": Plus reset failure.\n"
-#define ERRRESETHACK DRIVERNAME ": Reset hack failure.\n"
+#define ERRDAT DRIVERNAME ": Data failure.\n"
+#define ERRDATLQ DRIVERNAME ": Letter quality data failure.\n"
+#define ERRDATNLQ DRIVERNAME ": Near letter quality data failure.\n"
+#define ERRDEVTYPE DRIVERNAME ": Driver determination failed.\n"
+#define ERRDIRSELECT DRIVERNAME ": Printer initialization (directionality) failed.\n"
+#define ERRGPCSL DRIVERNAME ": gdev_prn_copy_scan_lines returned an unexpected value: code=%d,line_size=%d\n"
+#define ERRGPGL DRIVERNAME ": gdev_prn_get_lines() returned an unexpected value: %d\n"
+#define ERRLHNLQ DRIVERNAME ": Near letter quality line height failure."
+#define ERRMEMCOPY DRIVERNAME ": Error copying row to input buffer.\n"
+#define ERRNUMCOMP DRIVERNAME ": color_info.num_components out of range.\n"
+#define ERRPLANEINIT DRIVERNAME ": gx_render_plane_init returned an unexpected value: %d\n"
+#define ERRPOS DRIVERNAME ": Positionining failure.\n"
+#define ERRPOSLQ DRIVERNAME ": Letter quality positionining failure.\n"
+#define ERRPOSNLQ DRIVERNAME ": Near letter quality positionining failure.\n"
 #define ERRRESET DRIVERNAME ": Reset failure.\n"
+#define ERRREZDEVMISMATCH DRIVERNAME ": the selected device does not support the selected resolution.\n"
+#define ERRREZSELECT DRIVERNAME ": Printer initialization (resolution) failed.\n"
+#define ERRZEROROW DRIVERNAME ": Error zeroing row buffer.\n"
 
 /* Device structure */
 struct gx_device_admp_s {
         gx_device_common;
         gx_prn_device_common;
-        bool color;
-        bool plus;
         bool unidirectional;
         int rendermode;
-        int colorinfo;
-        int colorcoding;
-        bool debug;
-        bool UsePlanarBuffer;
 };
 
 typedef struct gx_device_admp_s gx_device_admp;
@@ -272,153 +248,12 @@ typedef struct gx_device_admp_s gx_device_admp;
 static dev_proc_put_params(admp_put_params);
 static dev_proc_get_params(admp_get_params);
 static dev_proc_print_page(admp_print_page);
-static dev_proc_open_device(admp_open);
-
-static int
-admp_open(gx_device* pdev)
-{
-        outprintf(pdev->memory, "admp_open()\n");
-
-        if (((gx_device_admp*)pdev)->UsePlanarBuffer)
-        //if (pdev->color_info.num_components == 4)
-        {
-                int code;
-
-                /*
-                gdev_prn_open_planar() devices:
-                - gdevcmykog.c:204
-                - gdevpbm.c:339
-                - gdevplan.c:396
-                - gdevplib.c:673
-                - gdevpsd.c:575
-                - gdevtsep.c:1211,1677
-                */
-                code = gdev_prn_open_planar(pdev, true);
-                if (code < 0)
-                        return code;
-                //pdev->color_info.separable_and_linear = GX_CINFO_SEP_LIN; // pbm, tsep1
-                //set_linear_color_bits_mask_shift(pdev); // pbm
-
-
-                return code;
-        }
-
-        return 0;
-}
-
-/*
-static int
-ppm_get_params(gx_device* pdev, gs_param_list* plist)
-{
-        gx_device_admp* const bdev = (gx_device_admp*)pdev;
-        int code;
-
-        code = gdev_prn_get_params_planar(pdev, plist, &bdev->UsePlanarBuffer);
-        if (code < 0) return code;
-        //code = param_write_null(plist, "OutputIntent");
-        //return code;
-}
-
-static int
-ppm_put_params(gx_device* pdev, gs_param_list* plist)
-{
-        gx_device_admp* const bdev = (gx_device_admp*)pdev;
-        gx_device_color_info save_info;
-        int ncomps = pdev->color_info.num_components;
-        int bpc = pdev->color_info.depth / ncomps;
-        int ecode = 0;
-        int code;
-        long v;
-        gs_param_string_array intent;
-        const char* vname;
-*/
-        /*
-        if ((code = param_read_string_array(plist, "OutputIntent", &intent)) == 0) {
-                /* This device does not use the OutputIntent parameter.
-                   We include this code just as a sample how to handle it.
-                   The PDF interpreter extracts OutputIntent from a PDF file and sends it to here,
-                   if a device includes it in the .getdeviceparams response.
-                   This device does include due to ppm_get_params implementation.
-                   ppm_put_params must handle it (and ingore it) against 'rangecheck'.
-                 *
-                static const bool debug_print_OutputIntent = false;
-
-                if (debug_print_OutputIntent) {
-                        int i, j;
-
-                        dmlprintf1(pdev->memory, "%d strings:\n", intent.size);
-                        for (i = 0; i < intent.size; i++) {
-                                const gs_param_string* s = &intent.data[i];
-                                dmlprintf2(pdev->memory, "  %d: size %d:", i, s->size);
-                                if (i < 4) {
-                                        for (j = 0; j < s->size; j++)
-                                                dmlprintf1(pdev->memory, "%c", s->data[j]);
-                                }
-                                else {
-                                        for (j = 0; j < s->size; j++)
-                                                dmlprintf1(pdev->memory, " %02x", s->data[j]);
-                                }
-                                dmlprintf(pdev->memory, "\n");
-                        }
-                }
-        }
-        save_info = pdev->color_info;
-        /*
-        if ((code = param_read_long(plist, (vname = "GrayValues"), &v)) != 1 ||
-                (code = param_read_long(plist, (vname = "RedValues"), &v)) != 1 ||
-                (code = param_read_long(plist, (vname = "GreenValues"), &v)) != 1 ||
-                (code = param_read_long(plist, (vname = "BlueValues"), &v)) != 1
-                ) {
-                if (code < 0)
-                        ecode = code;
-                else if (v < 2 || v >(bdev->is_raw || ncomps > 1 ? 256 : 65536L))
-                        param_signal_error(plist, vname,
-                                ecode = gs_error_rangecheck);
-                else if (v == 2)
-                        bpc = 1;
-                else if (v <= 4)
-                        bpc = 2;
-                else if (v <= 16)
-                        bpc = 4;
-                else if (v <= 32 && ncomps == 3)
-                        bpc = 5;
-                else if (v <= 256)
-                        bpc = 8;
-                else
-                        bpc = 16;
-                if (ecode >= 0) {
-                        static const byte depths[4][16] =
-                        {
-                            {1, 2, 0, 4, 0, 0, 0, 8, 0, 0, 0, 0, 0, 0, 0, 16},
-                            {0},
-                            {4, 8, 0, 16, 16, 0, 0, 24},
-                            {4, 8, 0, 16, 0, 0, 0, 32},
-                        };
-
-                        pdev->color_info.depth = depths[ncomps - 1][bpc - 1];
-                        pdev->color_info.max_gray = pdev->color_info.max_color =
-                                (pdev->color_info.dither_grays =
-                                        pdev->color_info.dither_colors = (int)v) - 1;
-                }
-        }
-        */
-        /*if (
-                (code = ecode) < 0 ||
-                (*/
-                        //code = gdev_prn_put_params_planar(pdev, plist, &bdev->UsePlanarBuffer)
-                 /*) < 0
-            )
-                pdev->color_info = save_info;
-                *//*
-        ppm_set_dev_procs(pdev);
-        return code;
-}
-*/
 
 static void
 admp_initialize_device_procs(gx_device* pdev)
 {
-        gdev_prn_initialize_device_procs_mono(pdev);
+        gdev_prn_initialize_device_procs_mono_bg(pdev);
+
         set_dev_proc(pdev, get_params, admp_get_params);
         set_dev_proc(pdev, put_params, admp_put_params);
 }
@@ -426,103 +261,87 @@ admp_initialize_device_procs(gx_device* pdev)
 static void
 admp_initialize_device_procs_color(gx_device* pdev)
 {
-        //gdev_prn_initialize_device_procs(pdev);
-        gdev_prn_initialize_device_procs_cmyk1(/*gx_device **/ pdev);
-        //set_dev_proc(pdev, map_rgb_color, cmyk_1bit_map_cmyk_color);
-        //set_dev_proc(pdev, map_color_rgb, NULL);
-        //set_dev_proc(pdev, map_cmyk_color, cmyk_1bit_map_cmyk_color);
-        //set_dev_proc(pdev, decode_color, cmyk_1bit_map_color_rgb);
-        //set_dev_proc(pdev, encode_color, cmyk_1bit_map_cmyk_color);
+        gdev_prn_initialize_device_procs_cmyk1_bg(pdev);
 
-        //set_dev_proc(pdev, map_cmyk_color, cmyk_1bit_map_cmyk_color);
-        //set_dev_proc(pdev, map_color_rgb, cmyk_1bit_map_color_rgb);
-        //set_dev_proc(pdev, encode_color, cmyk_1bit_map_cmyk_color);
-        //set_dev_proc(pdev, decode_color, cmyk_1bit_map_color_cmyk);
-
-        set_dev_proc(pdev, open_device, admp_open);
         set_dev_proc(pdev, get_params, admp_get_params);
         set_dev_proc(pdev, put_params, admp_put_params);
 }
 
 /* Standard DMP device descriptor */
-gx_device_admp far_data gs_appledmp_device = {
-prn_device_margins_body(gx_device_admp, admp_initialize_device_procs, "appledmp",	/* The print_page proc is compatible with allowing bg printing */
+const gx_device_admp far_data gs_appledmp_device = {
+prn_device_margins_body(gx_device_admp, admp_initialize_device_procs, "appledmp",
         DEFAULT_WIDTH_10THS_US_LETTER,  /* width_10ths, 8.5" */
         DEFAULT_HEIGHT_10THS_US_LETTER, /* height_10ths, 11" */
         120, 72,                        /* X_DPI, Y_DPI */
-        0, 0, 0.25, 0.25, 0.25, 0.25,   /* origin and margins */
+        0.25, 0, 0.25, 0.25, 0.25, 0.25,/* origin and margins */
         1, 1, 1, 0, 2, 1,               /* maxcomp, depth, maxgray, maxcolor, numgray, numcolor */
         admp_print_page),
-        0, 0 };
+        0, 0 };                         /* unidirectional, render mode */
+
 
 /*  lowrez ImageWriter device descriptor */
-gx_device_admp far_data gs_iwlo_device = {
-prn_device_margins_body(gx_device_admp, admp_initialize_device_procs, "iwlo",	/* The print_page proc is compatible with allowing bg printing */
+const gx_device_admp far_data gs_iwlo_device = {
+prn_device_margins_body(gx_device_admp, admp_initialize_device_procs, "iwlo",
         DEFAULT_WIDTH_10THS_US_LETTER,  /* width_10ths, 8.5" */
         DEFAULT_HEIGHT_10THS_US_LETTER, /* height_10ths, 11" */
         160, 72,                        /* X_DPI, Y_DPI */
-        0, 0, 0.25, 0.25, 0.25, 0.25,   /* origin and margins */
+        0.25, 0, 0.25, 0.25, 0.25, 0.25,/* origin and margins */
         1, 1, 1, 0, 2, 1,               /* maxcomp, depth, maxgray, maxcolor, numgray, numcolor */
         admp_print_page),
-        0, 0 };
+        0, 0 };                         /* unidirectional, render mode */
 
 /*  hirez ImageWriter device descriptor */
-gx_device_admp far_data gs_iwhi_device = {
-prn_device_margins_body(gx_device_admp, admp_initialize_device_procs, "iwhi",	/* The print_page proc is compatible with allowing bg printing */
+const gx_device_admp far_data gs_iwhi_device = {
+prn_device_margins_body(gx_device_admp, admp_initialize_device_procs, "iwhi",
         DEFAULT_WIDTH_10THS_US_LETTER,  /* width_10ths, 8.5" */
         DEFAULT_HEIGHT_10THS_US_LETTER, /* height_10ths, 11" */
         160, 144,                       /* X_DPI, Y_DPI */
-        0, 0, 0.25, 0.25, 0.25, 0.25,   /* origin and margins */
+        0.25, 0, 0.25, 0.25, 0.25, 0.25,/* origin and margins */
         1, 1, 1, 0, 2, 1,               /* maxcomp, depth, maxgray, maxcolor, numgray, numcolor */
         admp_print_page),
-        0, 0 };
+        0, 0 };                         /* unidirectional, render mode */
+
+/* color  hirez ImageWriter device descriptor */
+const gx_device_admp far_data gs_iwhic_device = {
+prn_device_margins_body(gx_device_admp, admp_initialize_device_procs_color, "iwhic",
+        DEFAULT_WIDTH_10THS_US_LETTER,  /* width_10ths, 8.5" */
+        DEFAULT_HEIGHT_10THS_US_LETTER, /* height_10ths, 11" */
+        160, 144,                       /* X_DPI, Y_DPI */
+        0.25, 0, 0.25, 0.25, 0.25, 0.25,/* origin and margins */
+        4, 4, 1, 1, 2, 2,               /* maxcomp, depth, maxgray, maxcolor, numgray, numcolor */
+        admp_print_page),
+        0, 0 };                         /* unidirectional, render mode */
 
 /* LQ hirez ImageWriter device descriptor */
-gx_device_admp far_data gs_iwlq_device = {
-prn_device_margins_body(gx_device_admp, admp_initialize_device_procs, "iwlq",	/* The print_page proc is compatible with allowing bg printing */
+const gx_device_admp far_data gs_iwlq_device = {
+prn_device_margins_body(gx_device_admp, admp_initialize_device_procs, "iwlq",
         DEFAULT_WIDTH_10THS_US_LETTER,  /* width_10ths, 8.5" */
         DEFAULT_HEIGHT_10THS_US_LETTER, /* height_10ths, 11" */
         320, 216,                       /* X_DPI, Y_DPI */
-        0, 0, 0, 0, 0, 0,               /* origin and margins */
+        0.25, 0, 0.25, 0.25, 0.25, 0.25,/* origin and margins */
         1, 1, 1, 0, 2, 1,
         admp_print_page),
-        /* colorbool,+ , directionbool, renderingmode,   colorinfo,   colorcoding, debug, UsePlanarBuffer */
-                   0,1,             0,      GPCSL,  MONO, 0,     0,               0};
+        0, 0 };                         /* unidirectional, render mode */
 
-/* LQ hirez ImageWriter device descriptor */
-gx_device_admp far_data gs_iwlqc_device = {
-prn_device_margins_body(gx_device_admp, admp_initialize_device_procs_color, "iwlqc",	/* The print_page proc is compatible with allowing bg printing */
+/* color LQ hirez ImageWriter device descriptor */
+const gx_device_admp far_data gs_iwlqc_device = {
+prn_device_margins_body(gx_device_admp, admp_initialize_device_procs_color, "iwlqc",
         DEFAULT_WIDTH_10THS_US_LETTER,  /* width_10ths, 8.5" */
         DEFAULT_HEIGHT_10THS_US_LETTER, /* height_10ths, 11" */
         320, 216,                       /* X_DPI, Y_DPI */
-        0, 0, 0, 0, 0, 0,               /* origin and margins */
-// gx_device_color_info - gxdevcli.h:258
-//                                     /* maxcomp, depth, maxgray, maxcolor, numgray, numcolor */
-//      4, 4, 1, 1, 2, 2,              /* dci_macro(4,4) (also per pk[s]m[raw] device descriptor) */
-//      4, 1, 1, 0, 2, 1,              /* dci_macro(4,1) */
-        4, 4, 1, 1, 2, 2,              /* per gdevbjc_ and gdevbmp - too many bits*/
-//      4, 1, 1, 1, 2, 2,              /* per me */
-//      1, 1, 1, 0, 2, 1,              /* dci_macro(dci_black_and_white) */
+        0.25, 0, 0.25, 0.25, 0.25, 0.25,/* origin and margins */
+        4, 4, 1, 1, 2, 2,               /* maxcomp, depth, maxgray, maxcolor, numgray, numcolor */
         admp_print_page),
-        /* colorbool,+ , directionbool, renderingmode,   colorinfo,   colorcoding, debug, UsePlanarBuffer */
-                   1,1,             0,      GPCSL,  ONEBITCMYK, PKSMRAWPPM,     0,               0 };
+        0, 0 };                         /* unidirectional, render mode */
 
 static int
 admp_get_params(gx_device* pdev, gs_param_list* plist)
 {
-        outprintf(pdev->memory, "admp_get_params()\n");
-
         int code = gdev_prn_get_params(pdev, plist);
 
         if (code < 0 ||
-                (code = param_write_bool(plist, "UsePlanarBuffer", &((gx_device_admp*)pdev)->UsePlanarBuffer)) < 0 ||
-                (code = param_write_bool(plist, "Color", &((gx_device_admp*)pdev)->color)) < 0 ||
-                (code = param_write_bool(plist, "Plus", &((gx_device_admp*)pdev)->plus)) < 0 ||
-                (code = param_write_bool(plist, "Unidirectional", &((gx_device_admp*)pdev)->unidirectional)) < 0 ||
-                (code = param_write_int(plist, "RenderMode", &((gx_device_admp*)pdev)->rendermode)) < 0 ||
-                (code = param_write_int(plist, "ColorInfo", &((gx_device_admp*)pdev)->colorinfo)) < 0 ||
-                (code = param_write_int(plist, "ColorCoding", &((gx_device_admp*)pdev)->colorcoding)) < 0 ||
-                (code = param_write_bool(plist, "Debug", &((gx_device_admp*)pdev)->debug)) < 0
+                (code = param_write_bool(plist, "UNIDIRECTIONAL", &((gx_device_admp*)pdev)->unidirectional)) < 0 ||
+                (code = param_write_int(plist, "RENDERMODE", &((gx_device_admp*)pdev)->rendermode)) < 0
                 )
                 return code;
 
@@ -532,205 +351,63 @@ admp_get_params(gx_device* pdev, gs_param_list* plist)
 static int
 admp_put_params(gx_device* pdev, gs_param_list* plist)
 {
-        outprintf(pdev->memory, "admp_put_params()\n");
-
-        /*
-        pdev->color_info.separable_and_linear = GX_CINFO_SEP_LIN;
-        set_linear_color_bits_mask_shift(pdev);
-        */
-
         int code = 0;
-        bool UsePlanarBuffer = ((gx_device_admp*)pdev)->UsePlanarBuffer;
-        bool color = ((gx_device_admp*)pdev)->color;
-        bool plus = ((gx_device_admp*)pdev)->plus;
         bool unidirectional = ((gx_device_admp*)pdev)->unidirectional;
         int rendermode = ((gx_device_admp*)pdev)->rendermode;
-        int colorinfo = ((gx_device_admp*)pdev)->colorinfo;
-        int colorcoding = ((gx_device_admp*)pdev)->colorcoding;
-        bool debug = ((gx_device_admp*)pdev)->debug;
         gs_param_name param_name;
         int ecode = 0;
-        /*
-        gx_device_color_info color_info_4bit = dci_std_color_(4, 4);
-        gx_device_color_info color_info_1bit = dci_std_color_(4, 1);
-        gx_device_color_info color_info_mono = dci_black_and_white;
-        */
 
         if ((code = param_read_bool(plist,
-                (param_name = "Unidirectional"),
+                (param_name = "UNIDIRECTIONAL"),
                 &unidirectional)) < 0) {
                 param_signal_error(plist, param_name, ecode = code);
         }
         if (ecode < 0)
                 return code;
 
-        if ((code = param_read_bool(plist,
-                (param_name = "UsePlanarBuffer"),
-                &UsePlanarBuffer)) < 0) {
-                param_signal_error(plist, param_name, ecode = code);
-        }
-        if (ecode < 0)
-                return code;
-
-        if ((code = param_read_bool(plist,
-                (param_name = "Color"),
-                &color)) < 0) {
-                param_signal_error(plist, param_name, ecode = code);
-        }
-        if (ecode < 0)
-                return code;
-
-        if ((code = param_read_bool(plist,
-                (param_name = "Plus"),
-                &plus)) < 0) {
-                param_signal_error(plist, param_name, ecode = code);
-        }
-        if (ecode < 0)
-                return code;
-
         if ((code = param_read_int(plist,
-                (param_name = "RenderMode"),
+                (param_name = "RENDERMODE"),
                 &rendermode)) < 0) {
                 param_signal_error(plist, param_name, ecode = code);
         }
         if (ecode < 0)
                 return code;
 
-        if ((code = param_read_int(plist,
-                (param_name = "ColorInfo"),
-                &colorinfo)) < 0) {
-                param_signal_error(plist, param_name, ecode = code);
-        }
-        if (ecode < 0)
-                return code;
-
-        if ((code = param_read_int(plist,
-                (param_name = "ColorCoding"),
-                &colorcoding)) < 0) {
-                param_signal_error(plist, param_name, ecode = code);
-        }
-        if (ecode < 0)
-                return code;
-
-        if ((code = param_read_bool(plist,
-                (param_name = "Debug"),
-                &debug)) < 0) {
-                param_signal_error(plist, param_name, ecode = code);
-        }
-        if (ecode < 0)
-                return code;
-        
-        ((gx_device_admp*)pdev)->UsePlanarBuffer = UsePlanarBuffer;
-        ((gx_device_admp*)pdev)->color = color;
-        ((gx_device_admp*)pdev)->plus = plus;
         ((gx_device_admp*)pdev)->unidirectional = unidirectional;
         ((gx_device_admp*)pdev)->rendermode = rendermode;
-        ((gx_device_admp*)pdev)->colorinfo = colorinfo;
-        ((gx_device_admp*)pdev)->colorcoding = colorcoding;
-        ((gx_device_admp*)pdev)->debug = debug;
-        
-        /* try to reverse engineer and dynamically set color_info values */
-        /*if (((gx_device_admp*)pdev)->color)
-        {
-                switch (((gx_device_admp*)pdev)->colorinfo)
-                {
-                case FOURBITCMYK:
-                        pdev->color_info = color_info_4bit;
-                        break;
-                case ONEBITCMYK:
-                        pdev->color_info = color_info_1bit;
-                        break;
-                default: pdev->color_info = color_info_mono; // MONO
-                }
 
-                //pdev->max_components = ;
-                //pdev->num_components = ;
-                //pdev->polarity = ;
-                //pdev->depth = ;
-                //pdev->gray_index = ;
-                //pdev->max_gray = ;
-                //pdev->max_color = ;
-                //pdev->dither_grays = ;
-                //pdev->dither_colors = ;
-                //pdev->antialias = ;
-                //...
-
-                gdev_prn_put_params(pdev, plist);
-
-                if (pdev->is_open)
-                        return gs_closedevice(pdev);
-
-                return 0;
-        }
-        else*/
-                return gdev_prn_put_params(pdev, plist);
+        return gdev_prn_put_params(pdev, plist);
 }
 
 /* Send the page to the printer output file. */
 static int
 admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
 {
-        outprintf(pdev->memory, "admp_print_page()\n");
-        outprintf(pdev->memory, "Color=%d\n", ((gx_device_admp*)pdev)->color);
-        outprintf(pdev->memory, "RenderMode=%d\n", ((gx_device_admp*)pdev)->rendermode);
-        outprintf(pdev->memory, "ColorInfo=%d\n", ((gx_device_admp*)pdev)->colorinfo);
-        outprintf(pdev->memory, "ColorCoding=%d\n", ((gx_device_admp*)pdev)->colorcoding);
-        outprintf(pdev->memory, "Debug=%d\n", ((gx_device_admp*)pdev)->debug);
-        int code = gs_error_ok;
+        uint64_t code = gs_error_ok;
         char pcmd[255];
         int dev_rez;
         int dev_type;
         unsigned char color = 0;
-        int line_size_mono = gdev_mem_bytes_per_scan_line((gx_device*)pdev); /* or bitmap_raster(pdev->width); */
-        int in_size_mono = line_size_mono * 8; /* Note that in_size is a multiple of 8 dots in height. */
+        int line_size = gdev_mem_bytes_per_scan_line((gx_device*)pdev);
+        int in_size = line_size * 8; /* Note that in_size is a multiple of 8 dots in height. */
 
-        char color_order[4];
+        unsigned char color_order[4];
 
-        gx_color_index yellow_mask, cyan_mask, magenta_mask, black_mask;
-        gx_render_plane_t yellow_plane, cyan_plane, magenta_plane, black_plane;
-        gx_render_plane_t render_plane;
-        byte* buf_y, * buf_c, * buf_m, * buf_k, * buf_in, * buf_out, * prn;
-        int render_plane_num = 0;
+        gx_render_plane_t render_planes[4];
+
+        byte *buf_in, *buf_out, *prn, *row;
 
         switch (pdev->color_info.num_components)
         {
         case 4:
-                color_order[0] = 1;
-                color_order[1] = 3;
-                color_order[2] = 2;
-                color_order[3] = 0;
-
-                /*
-                if (((gx_device_admp*)pdev)->rendermode == GPGL)
-                {
-                        gx_render_plane_init(&yellow_plane, (gx_device*)pdev, 2);
-                        gx_render_plane_init(&cyan_plane, (gx_device*)pdev, 0);
-                        gx_render_plane_init(&magenta_plane, (gx_device*)pdev, 1);
-                }
-                */
-
-                buf_y = (byte*)gs_malloc(pdev->memory, in_size_mono * 3, 1, "admp_print_page(buf_y)");
-                buf_c = (byte*)gs_malloc(pdev->memory, in_size_mono * 3, 1, "admp_print_page(buf_c)");
-                buf_m = (byte*)gs_malloc(pdev->memory, in_size_mono * 3, 1, "admp_print_page(buf_m)");
-                //render_plane_num = 3;
+                /* Use the YCMK order in an attempt to reduce cross-band contaminatien */
+                color_order[0] = 2;
+                color_order[1] = 0;
+                color_order[2] = 1;
+                color_order[3] = 3;
                 break;
         case 1:
                 color_order[0] = 0;
-                color_order[1] = 0;
-                color_order[2] = 0;
-                color_order[3] = 0;
-
-                /*
-                if (((gx_device_admp*)pdev)->rendermode == GPGL)
-                {
-                        gx_render_plane_init(&render_plane, (gx_device*)pdev, render_plane_num);
-                }
-                else
-                {
-                        int render_plane_num = 0;
-                }
-                */
-
                 break;
         default:
                 outprintf(pdev->memory, ERRNUMCOMP);
@@ -738,26 +415,21 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                 goto xit;
         }
 
-        buf_k = (byte*)gs_malloc(pdev->memory,  in_size_mono * 3, 1, "admp_print_page(buf_k)");
-        buf_in = (byte*)gs_malloc(pdev->memory, in_size_mono * pdev->color_info.num_components, 1, "admp_print_page(buf_in)");
-        buf_out = (byte*)gs_malloc(pdev->memory, in_size_mono * pdev->color_info.num_components, 1, "admp_print_page(buf_out)");
-        prn  = (byte*)gs_malloc(pdev->memory,  in_size_mono * 3, 1, "admp_print_page(prn)");
+        row = (byte*)gs_malloc(pdev->memory, line_size, 1, "admp_print_page(row)");
+        buf_in = (byte*)gs_malloc(pdev->memory, in_size, 1, "admp_print_page(buf_in)");
+        buf_out = (byte*)gs_malloc(pdev->memory, in_size, 1, "admp_print_page(buf_out)");
+        prn  = (byte*)gs_malloc(pdev->memory,  in_size * 3, 1, "admp_print_page(prn)");
         byte* prn_saved = prn;
 
         byte* in = buf_in;
         byte* out = buf_out;
         int lnum = 0;
-        int band_end;
 
         /* Check allocations */
-        if (buf_k == 0 ||
+        if (row == 0 ||
             buf_in == 0 ||
             buf_out == 0 ||
-            prn == 0 ||
-            (gx_device_has_color(pdev) &&
-                    (buf_y == 0 ||
-                            buf_m == 0 ||
-                            buf_c == 0)))
+            prn == 0)
         {
                 errprintf(pdev->memory, ERRALLOC);
                 code = gs_note_error(gs_error_VMerror);
@@ -765,9 +437,9 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
         }
 
         /* Determine device type */
-        /* will need modification if new device descriptors added */
         if (strcmp(pdev->dname, "iwlqc") == 0) dev_type = IWLQ;
         else if (strcmp(pdev->dname, "iwlq") == 0) dev_type = IWLQ;
+        else if (strcmp(pdev->dname, "iwhic") == 0) dev_type = IWHI;
         else if (strcmp(pdev->dname, "iwhi") == 0) dev_type = IWHI;
         else if (strcmp(pdev->dname, "iwlo") == 0) dev_type = IWLO;
         else if (strcmp(pdev->dname, "appledmp") == 0) dev_type = DMP;
@@ -778,7 +450,9 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                 goto xit;
         }
 
-        /* Initialize the printer. */
+        /* Initialize the printer by setting line-height and
+         * print-head direction.
+         */
         if (((gx_device_admp*)pdev)->unidirectional)
         {
                 (void)strcpy(pcmd, ESC UNIDIRECTIONAL ESC LINEHEIGHT "16");
@@ -797,25 +471,25 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                 goto xit;
         }
 
-        /* Set resolution */
+        /* Select resolution */
         if (pdev->y_pixels_per_inch == 216) dev_rez = H320V216;
         else if (pdev->y_pixels_per_inch == 144) dev_rez = H160V144;
         else if (pdev->x_pixels_per_inch == 160) dev_rez = H160V72;
         else dev_rez = H120V72;
 
-        /* Set character pitch */
+        /* Set resolution/character pitch */
         switch (dev_rez)
         {
         case H320V216:
                 (void)strcpy(pcmd, ESC ELITEPROPORTIONAL ESC LQPROPORTIONAL);
                 code = gp_fputs(pcmd, gprn_stream);
                 break;
-        case H160V144:
+        case H160V144: /* falls through */
         case H160V72:
                 (void)strcpy(pcmd, ESC ELITEPROPORTIONAL);
                 code = gp_fputs(pcmd, gprn_stream);
                 break;
-        case H120V72:
+        case H120V72: /* falls through */
         default:
                 (void)strcpy(pcmd, ESC CONDENSED);
                 code = gp_fputs(pcmd, gprn_stream);
@@ -829,277 +503,187 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                 goto xit;
         }
 
-        /* Print lines of graphics */
+        /* Pre-initialize the render planes */
+        for (color = 0; color < pdev->color_info.num_components; ++color)
+        {
+                code = gx_render_plane_init(&render_planes[color_order[color]], (gx_device*)pdev, color_order[color]);
+
+                if (code != 0)
+                {
+                        errprintf(pdev->memory, ERRPLANEINIT, code);
+                        code = gs_note_error(gs_error_rangecheck);
+                        goto xit;
+                }
+        }
+
+        /* Zero the scanline buffer because the output file fills
+           with patterns of 0xFF and 0x00 otherwise.  Additionally,
+           not zeroing the row causes the 320x216 color IWLQ test
+           case to hit ERRCMDLQ.  I speculate that there may be
+           a padding/alingment issue at play but am not sure. */
+        code = (uint64_t)memset(row, 0, line_size);
+
+        if (code != (uint64_t)row)
+        {
+                errprintf(pdev->memory, ERRZEROROW, code);
+                code = gs_note_error(gs_error_rangecheck);
+                goto xit;
+        }
+
+        /* For each scan line in the main buffer */
         while (lnum < pdev->height)
         {
                 byte* inp;
                 byte* in_end;
                 byte* out_end;
+                byte* actual_row;
                 int lcnt, ltmp;
                 int count, passes;
-                byte* prn_blk, * prn_end, * prn_tmp, * prn_orig;
-                byte* out_saved = out;
+                byte* prn_blk, * prn_end, * prn_tmp;
+                uint actual_line_size;
 
-                /* 8-dot tall bands per pass */
+                /* 8 raster tall bands per pass */
                 switch (dev_rez)
                 {
                 case H320V216: passes = 3; break;
                 case H160V144: passes = 2; break;
-                case H160V72:
-                case H120V72:
+                case H160V72: /* falls through */
+                case H120V72: /* falls through */
                 default: passes = 1; break;
                 }
-                //gx_render_plane_init(&render_plane, (gx_device*)pdev, 0);
 
-                /* get rendered scanlines and assemble into 8, 16, or 24-dot high strips */
-                for (count = 0; count < passes; count++)
+                /* For each colorant, copy, transpose, copy and write a band of dots */
+                for (color = 0; color < pdev->color_info.num_components; ++color)
                 {
-                        for (lcnt = 0; lcnt < 8; lcnt++)
+                        /* Get rendered scanlines from each plane and assemble into 8, 16, or 24-dot high strips */
+                        for (count = 0; count < passes; count++)
                         {
-                                byte* row;
-                                switch (dev_rez)
+                                /* For each line in an 8-dot high band*/
+                                for (lcnt = 0; lcnt < 8; lcnt++)
                                 {
-                                case H320V216: ltmp = lcnt + 8 * count; break;
-                                case H160V144: ltmp = 2 * lcnt + count; break;
-                                case H160V72:
-                                case H120V72:
-                                default: ltmp = lcnt; break;
-                                }
-
-                                if ((lnum + ltmp) > pdev->height) /* if we're at end of page */
-                                {
-                                        /* write a blank line */
-                                        code = (int)memset(in + lcnt * line_size_mono * pdev->color_info.num_components, 0, line_size_mono * pdev->color_info.num_components);
-
-                                        if (code != (int)(in + lcnt * line_size_mono * pdev->color_info.num_components))
+                                        /* Select band count/height */
+                                        switch (dev_rez)
                                         {
-                                                errprintf(pdev->memory, ERRBLANKLINE);
-                                                code = gs_note_error(gs_error_undefined);
-                                                goto xit;
+                                        case H320V216: ltmp = lcnt + 8 * count; break;
+                                        case H160V144: ltmp = 2 * lcnt + count; break;
+                                        case H160V72: /* falls through */
+                                        case H120V72: /* falls through */
+                                        default: ltmp = lcnt; break;
                                         }
-                                }
-                                else /* otherwise, get scan lines */
-                                {
-                                        switch (((gx_device_admp*)pdev)->rendermode)
+
+                                        if ((lnum + ltmp) > pdev->height) /* if we're past end of page */
+                                                /* write a blank line, ignoring return value */
+                                                memset(in + lcnt * line_size , 0, line_size);
+                                        else /* otherwise, get scan lines */
                                         {
-                                        case GPGL:
-                                                /*gx_color_usage_t color_usage;
-                                                int band_start;
-                                                int band_height =
-                                                        gdev_prn_color_usage((gx_device*)pdev, lnum, 1,
-                                                                &color_usage, &band_start);
-
-                                                band_end = band_start + band_height;
-                                                marked = color_usage. or &(plane_mask << plane_shift);
-                                                if (!marked)
-                                                        memset(in, 0, line_size);
-                                                */
-
-                                                /*
-                                                Read one or more rasterized scan lines for printing.
-
-                                                copies the scan lines into the buffer
-                                                sets *actual_buffer = buffer and *actual_bytes_per_line = bytes_per_line,
-                                                or
-                                                sets *actual_buffer and *actual_bytes_per_line to reference already-rasterized scan lines.
-                                                                                                *
-                                                For non-banded devices, copying is never necessary.
-
-                                                For banded devices, if the client's buffer is at least as large as the single preallocated
-                                                one (if any), the band will be rasterized directly into the client's
-                                                buffer, again avoiding copying.  Alternatively, if there is a
-                                                preallocated buffer and the call asks for no more data than will fit
-                                                in that buffer, buffer may be NULL: any necessary rasterizing will
-                                                occur in the preallocated buffer, and a pointer into the buffer will be
-                                                returned.
-
-                                                int gdev_prn_get_lines(gx_device_printer * pdev,
-                                                        int y,
-                                                        int height,
-                                                        byte * buffer,
-                                                        uint bytes_per_line,
-                                                        byte * *actual_buffer,
-                                                        uint * actual_bytes_per_line,
-                                                        const gx_render_plane_t * render_plane);
-                                                */
-
-                                                gx_render_plane_t render_plane;
-                                                uint actual_line_size;
-                                                byte* actual_buffer;
-
-                                                render_plane.index = color;
-                                                byte* row;
-
-                                                //if (((gx_device_admp*)pdev)->debug) outprintf(pdev->memory, "pre-out: %d", out);
-                                                code = (int)gdev_prn_get_lines(pdev,
-                                                        lnum + ltmp,
-                                                        1,
-                                                        //out, //produces some initial output, then lots of 0xCD ~700KB
-                                                        out + line_size_mono * pdev->color_info.num_components * (7 - lcnt), // closest to original call, produces some partially sane output, but has lots of extra whitespace on long lines ~7KB w/o 0xCD
-                                                        //out + line_size_mono * pdev->color_info.num_components * lcnt, // produces some partially sane output, but has lots of extra whitespace on long lines ~7KB w/o 0xCD
-                                                        //in + line_size * (7 - lcnt),
-                                                        line_size_mono,// *pdev->color_info.num_components,
-                                                        &actual_buffer,
-                                                        &actual_line_size,
-                                                        &render_plane); // providing NULL resulted in all 0xCD output ~800KB
-                                                //if (((gx_device_admp*)pdev)->debug) outprintf(pdev->memory, ", post-out: %d\n", out);
-
-                                                if (((gx_device_admp*)pdev)->debug) outprintf(pdev->memory, "code=%d,actual_line_size=%d\n", code, actual_line_size);
-
-                                                if (((gx_device_admp*)pdev)->debug && actual_buffer != out + line_size_mono * pdev->color_info.num_components * lcnt)
-                                                        outprintf(pdev->memory, "out=%x,out+line_size_mono * pdev->color_info.num_components+lcnt=%x,actual_buffer=%x\n", out, out + line_size_mono * pdev->color_info.num_components * lcnt, actual_buffer);
-
-                                                if (code = gs_error_rangecheck) continue;
-
-                                                if (code != 1 && actual_line_size != line_size_mono * pdev->color_info.num_components)
+                                                /* switch (4) */
+                                                /* switch (pdev->color_info.num_components) */
+                                                if (((gx_device_admp*)pdev)->rendermode == GPGL || pdev->color_info.num_components == 4)
                                                 {
-                                                        errprintf(pdev->memory, ERRGPGL);
-                                                        code = gs_note_error(gs_error_rangecheck);
-                                                        goto xit;
-                                                }
-                                                break;
-                                        case GPCSL:
-                                                /* gdev_prn_copy_scan_lines(gx_device_printer * pdev, int y, byte * str, uint size) - gdevprn.c:1641 */
-                                                /* copy scanlines to the buffer */
-                                                code = gdev_prn_copy_scan_lines(
-                                                        pdev,
-                                                        (lnum + ltmp),
-                                                        /*((lnum*(color+1)) + ltmp),*/
-                                                        in + (line_size_mono * pdev->color_info.num_components) * (7 - lcnt), /*( lcnt * (color + 1))),*/
-                                                        line_size_mono * pdev->color_info.num_components);// *pdev->color_info.num_components);
+                                                        /* copy a scanline to the buffer */
+                                                        code = (int)gdev_prn_get_lines(pdev,
+                                                                lnum + ltmp,
+                                                                1,
+                                                                row,
+                                                                line_size,
+                                                                &actual_row,
+                                                                &actual_line_size,
+                                                                &render_planes[color_order[color]]);
 
-                                                if (code != pdev->color_info.num_components)
+                                                        if (code != 0 || actual_line_size != line_size)
+                                                        {
+                                                                errprintf(pdev->memory, ERRGPGL, code);
+                                                                code = gs_note_error(gs_error_rangecheck);
+                                                                goto xit;
+                                                        }
+
+                                                        /* The apple DMP printer seems to be odd in that the bit order on
+                                                         * each line is reverse what might be expected.  Meaning, an
+                                                         * underscore would be done as a series of 0x80, while on overscore
+                                                         * would be done as a series of 0x01.  So we get each
+                                                         * scan line in reverse order.
+                                                         */
+
+                                                        /* compute input buffer offset */
+                                                        byte* in_start = in + line_size * (7 - lcnt);
+
+                                                        /* copy row to input buffer */
+                                                        code = (uint64_t)memcpy(in_start, row, line_size);
+
+                                                        if (code != (uint64_t)in_start)
+                                                        {
+                                                                errprintf(pdev->memory, ERRMEMCOPY, code);
+                                                                code = gs_note_error(gs_error_rangecheck);
+                                                                goto xit;
+                                                        }
+                                                }
+                                                else
                                                 {
-                                                        errprintf(pdev->memory, "code=%d,line_size_mono=%d\n", code, line_size_mono);
-                                                        errprintf(pdev->memory, ERRGPCSL);
-                                                        //code = gs_note_error(gs_error_rangecheck);
-                                                        //goto xit;
+                                                        /* gdev_prn_copy_scan_lines(gx_device_printer * pdev, int y, byte * str, uint size) - gdevprn.c:1641 */
+                                                        /* copy a scanline to the buffer */
+                                                        code = gdev_prn_copy_scan_lines(
+                                                                pdev,
+                                                                (lnum + ltmp),
+                                                                in + line_size * (7 - lcnt),
+                                                                line_size);
+
+                                                        if (code != 1)
+                                                        {
+                                                                errprintf(pdev->memory, ERRGPCSL, code, line_size);
+                                                                code = gs_note_error(gs_error_rangecheck);
+                                                                goto xit;
+                                                        }
+
                                                 }
-
-                                                break;
                                         }
-                                        if (lnum == 24)
-                                        {
-                                                int foo = 0;
-                                        }
-                                        if (((gx_device_admp*)pdev)->debug && lnum > 64)
-                                                goto xit;
-                                }
-                        } /* for lcnt */
+                                } /* for lcnt */
 
-                        if (((gx_device_admp*)pdev)->debug) gp_fflush(gprn_stream); /* flush the file here to guarantee output earlier in the pipeline while debugging */
-
-                        //gx_color_index marked = 0;
-                        //int plane_depth;
-                        //int plane_shift;
-                        //gx_color_index plane_mask;
-
-                        //plane_depth = render_plane.depth;
-                        //plane_shift = render_plane.shift;
-                        //plane_mask = ((gx_color_index)1 << plane_depth) - 1;
-                        //raster = bitmap_raster(pdev->width * plane_depth);
-
-                        /* Here we have a full input buffer, which supposedly requires transposition -- requiring another copy operation */
-
-                        switch (((gx_device_admp*)pdev)->rendermode)
-                        {
-                        case GPCSL:
+                                /* Here is the full input buffer.  It requires transposition
+                                 * since the printer's native grapics format is 8-bits tall, with
+                                 * a single bit midth.
+                                 */
                                 out_end = out;
-                                inp = in;// +(line_size * color);
-                                in_end = inp + (line_size_mono * pdev->color_info.num_components);// +(line_size * color);
+                                inp = in;
+                                in_end = inp + line_size;
                                 for (; inp < in_end; inp++, out_end += 8)
                                 {
-                                        /* The apple DMP printer seems to be odd in that the bit order on
-                                         * each line is reverse what might be expected.  Meaning, an
-                                         * underscore would be done as a series of 0x80, while on overscore
-                                         * would be done as a series of 0x01.  So we get each
-                                         * scan line in reverse order. -- Unknown
-                                         */
-                                         /* gdev_prn_transpose(...) returns void */
-                                        gdev_prn_transpose_8x8(inp, line_size_mono * pdev->color_info.num_components, out_end, 1);
-
-                                }
-                                break;
-                        }
-
-                        /*
-                        So, here we have the output buffer, fully transposed, supposedly...
-                        if we take this output buffer and copy it to the color buffers
-                        */
-                        out_end = out;
-
-                        out_saved = out;
-                        prn_saved = prn;
-                        for (color = 0; color < pdev->color_info.num_components; color++)
-                        {
-
-                                out = out_saved;
-
-                                switch (color)
-                                {
-                                case 0:
-                                        prn = buf_k;
-                                        out = out;
-                                        break;
-                                case 1:
-                                        prn = buf_y;
-                                        out = out + line_size_mono;
-                                        break;
-                                case 2:
-                                        prn = buf_m;
-                                        out = out + (line_size_mono * 2);
-                                        break;
-                                case 3:
-                                        prn = buf_c;
-                                        out = out + (line_size_mono * 3);
-                                        break;
-                                default:
-                                        outprintf(pdev->memory, ERRNUMCOMP);
-                                        code = gs_note_error(gs_error_rangecheck);
-                                        goto xit;
+                                        /* gdev_prn_transpose(...) returns void */
+                                        gdev_prn_transpose_8x8(inp, line_size, out_end, 1);
                                 }
 
+                                /* Here is the output buffer, fully transposed */
                                 out_end = out;
 
+                                /* Determine tho size of the final print buffer. */
                                 switch (dev_rez)
                                 {
                                 case H320V216: prn_end = prn + count; break;
-                                case H160V144: prn_end = prn + in_size_mono * count; break;
-                                case H160V72:
-                                case H120V72:
+                                case H160V144: prn_end = prn + in_size * count; break;
+                                case H160V72: /* falls through */
+                                case H120V72: /* falls through */
                                 default: prn_end = prn; break;
                                 }
 
-                                //if (((gx_device_admp*)pdev)->debug) outprintf(pdev->memory, "color: %d; out_end: 0x%8x; out: 0x%8x;\n", color, out_end, out);
-                                int loops = 0;
-                                while ((int)(out_end - out) < in_size_mono)
+                                /* Copy the output buffer to the final print buffer,
+                                 * but don't use memcpy, possibly for some reason.
+                                 */
+                                while ((int)(out_end - out) < in_size)
                                 {
-                                        if (loops > in_size_mono)
-                                                break;
                                         *prn_end = *(out_end++);
-                                        if (dev_rez == H320V216) prn_end += 3;
+                                        if ((dev_rez) == H320V216) prn_end += 3;
                                         else prn_end++;
-                                        loops++;
                                 }
-                                //if (((gx_device_admp*)pdev)->debug) outprintf(pdev->memory, "color: %d; out_end: 0x%8x; out: 0x%8x;\n", color, out_end, out);
-                        } /* for color, first */
+                        } /* for count */
 
-                        out = out_saved;
-                } /* for count */
-
-                for (color = 0 ; color < pdev->color_info.num_components; color++)
-                {
-                        outprintf(pdev->memory, "color2: %d\n", color);
-                        
                         /* Select ribbon color */
                         if (gx_device_has_color(pdev))
                         {
                                 switch (color_order[color])
                                 {
-                                case 3: (void)strcpy(pcmd, ESC COLORSELECT CYAN); break;
-                                case 2: (void)strcpy(pcmd, ESC COLORSELECT MAGENTA); break;
-                                case 1: (void)strcpy(pcmd, ESC COLORSELECT YELLOW); break;
-                                case 0: (void)strcpy(pcmd, ESC COLORSELECT BLACK); break;
+                                case 3: (void)strcpy(pcmd, ESC COLORSELECT BLACK); break;
+                                case 2: (void)strcpy(pcmd, ESC COLORSELECT YELLOW); break;
+                                case 1: (void)strcpy(pcmd, ESC COLORSELECT MAGENTA); break;
+                                case 0: (void)strcpy(pcmd, ESC COLORSELECT CYAN); break;
                                 }
 
                                 code = gp_fputs(pcmd, gprn_stream);
@@ -1112,78 +696,63 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                                 }
                         }
 
-                        switch (color)
-                        {
-                        case 0:
-                                prn = buf_k;
-                                break;
-                        case 1:
-                                prn = buf_y;
-                                break;
-                        case 2:
-                                prn = buf_c;
-                                break;
-                        case 3:
-                                prn = buf_m;
-                                break;
-                        default:
-                                outprintf(pdev->memory, ERRNUMCOMP);
-                                code = gs_note_error(gs_error_rangecheck);
-                                goto xit;
-                        }
+                        /* Send bitmaps to printer, based on resolution setting
 
-                        //prn_orig = prn;
-
-                        /* send bitmaps to printer, based on resolution setting
-
-                                note: each of the three vertical resolutions has a
-                                unique and separate implementation
+                        Note: each of the three vertical resolutions has a
+                        unique and separate implementation, but follows the
+                        same pattern as is documented in the H320V216
+                        case and, therefore, is only documented in
+                        comments there*.
                         */
+
                         switch (dev_rez)
                         {
                         case H320V216:
                                 prn_blk = prn;
-                                prn_end = prn_blk + in_size_mono * 3;
+                                prn_end = prn_blk + in_size * 3;
+                                
                                 /* determine right edge of bitmap data */
                                 while (prn_end > prn && prn_end[-1] == 0 &&
                                         prn_end[-2] == 0 && prn_end[-3] == 0)
                                 {
                                         prn_end -= 3;
                                 }
+                                
                                 /* determine left edge of bitmap data */
                                 while (prn_blk < prn_end && prn_blk[0] == 0 &&
                                         prn_blk[1] == 0 && prn_blk[2] == 0)
                                 {
                                         prn_blk += 3;
                                 }
+                                
                                 /* send bitmaps to printer, if any */
                                 if (prn_end != prn_blk)
                                 {
                                         if ((prn_blk - prn) > 7)
                                         {
                                                 /* set print-head position by sending a repeated all-zeros hirez bitmap */
-                                                /*code = */ gp_fprintf(gprn_stream,
+                                                code = gp_fprintf(gprn_stream,
                                                         ESC BITMAPHIRPT "%04d%c%c%c",
-                                                        //(int)((prn_blk - prn) / 3),
-                                                        (int)(((prn_blk - prn) / 3) - (in_size_mono * color)),
+                                                        (int)((prn_blk - prn) / 3),
+                                                        //(int)(((prn_blk - prn) / 3) - (in_size)),
                                                         0, 0, 0);
 
-                                                if (code != 3)
+                                                if (code != 9)
                                                 {
                                                         errprintf(pdev->memory, ERRPOSLQ);
-                                                        //code = gs_note_error(gs_error_ioerror);
-                                                        //goto xit;
+                                                        code = gs_note_error(gs_error_ioerror);
+                                                        goto xit;
                                                 }
                                         }
                                         else
                                                 prn_blk = prn;
 
-                                        /* send hirez bitmapped graphics mode command with length parameter*/
+                                        /* send hirez bitmapped graphics mode command (with length parameter) */
                                         code = gp_fprintf(gprn_stream,
                                                 ESC BITMAPHI "%04d",
                                                 (int)((prn_end - prn_blk) / 3));
 
-                                        if (code < 6 || code > 7)
+                                        if (code != 6)
                                         {
                                                 errprintf(pdev->memory, ERRCMDLQ);
                                                 code = gs_note_error(gs_error_ioerror);
@@ -1207,8 +776,8 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                         case H160V144:
                                 for (count = 0; count < 2; count++)
                                 {
-                                        prn_blk = prn_tmp = prn + in_size_mono * count;
-                                        prn_end = prn_blk + in_size_mono;
+                                        prn_blk = prn_tmp = prn + in_size * count;
+                                        prn_end = prn_blk + in_size;
                                         while (prn_end > prn_blk && prn_end[-1] == 0)
                                                 prn_end--;
                                         while (prn_blk < prn_end && prn_blk[0] == 0)
@@ -1257,6 +826,7 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                                         }
                                         if (!count)
                                         {
+                                                /* For V144, advance the page 1/144th of an inch for the first NLQ pass... */
                                                 code = gp_fputs(ESC LINEHEIGHT "01" CR LF,
                                                         gprn_stream);
 
@@ -1268,6 +838,7 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                                                 }
                                         }
                                 }
+                                /* then set the line-height for the remaining 15/144ths to finish the 2nd NLQ pass. */
                                 code = gp_fputs(ESC LINEHEIGHT "15",
                                         gprn_stream);
 
@@ -1282,7 +853,7 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                         case H120V72:
                         default:
                                 prn_blk = prn;
-                                prn_end = prn_blk + in_size_mono;
+                                prn_end = prn_blk + in_size;
                                 while (prn_end > prn_blk && prn_end[-1] == 0)
                                         prn_end--;
                                 while (prn_blk < prn_end && prn_blk[0] == 0)
@@ -1332,12 +903,11 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                                 break;
                         }
 
-
-                        if (color < 3)
+                        if (pdev->color_info.num_components == 4 && color < 3)
                         {
-                                /* temporarily inject an LF with the CR for debugging */
-                                code = gp_fputs(CR LF, gprn_stream);
-                                if (code != 2)
+                                /* Reset the print-head position for the next band */
+                                code = gp_fputs(CR, gprn_stream);
+                                if (code != 1)
                                 {
                                         errprintf(pdev->memory, ERRCR);
                                         code = gs_note_error(gs_error_ioerror);
@@ -1346,6 +916,7 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                         }
                         else
                         {
+                                /* Reset the print-head position and advance the page */
                                 code = gp_fputs(CR LF, gprn_stream);
                                 if (code != 2)
                                 {
@@ -1354,82 +925,45 @@ admp_print_page(gx_device_printer* pdev, gp_file* gprn_stream)
                                         goto xit;
                                 }
                         }
+                } /* for color */
 
-                } /* for color, second */
-
+                /* Set lnum to reflect the number of 8-dot tall bands printed */
                 switch (dev_rez)
                 {
                 case H320V216: lnum += 24; break;
                 case H160V144: lnum += 16; break;
-                case H160V72:
-                case H120V72:
+                case H160V72: /* falls through */
+                case H120V72: /* falls through */
                 default: lnum += 8; break;
                 }
-
         } /* while lnum < pdev->height */
-        prn = prn_saved;
 
-        /* Eject the page and reset the printer.
-         *
-         * For ImageWriter and newer printers, use Plus mode paper handling
-         * and printer reset commands, available in driver version ][.
-         * Otherwise use the original code.
+        /* Page should auto-eject since there were line-feeds for every
+         * band -- no need for a form-feed.
+         * 
+         * Reset printer with factory defaults and elite character pitch.
          */
-        if (((gx_device_admp*)pdev)->plus)
+        code = gp_fputs(ESC BIDIRECTIONAL ESC LINE6PI ESC ELITE,
+                gprn_stream);
+
+        if (code != 6)
         {
-                code = gp_fputs(FF ESC RESET,
-                        gprn_stream);
-
-                if (code != 3)
-                {
-                        errprintf(pdev->memory, ERRRESETPLUS);
-                        code = gs_note_error(gs_error_ioerror);
-                        goto xit;
-                }
+                errprintf(pdev->memory, ERRRESET);
+                code = gs_note_error(gs_error_ioerror);
+                goto xit;
         }
-        else
-        {
-                /* ImageWriter will skip a whole page if too close to end */
-                /* so skip back more than an inch */
-                if ( !(dev_type == DMP) )
-                {
-                        code = gp_fputs(ESC LINEHEIGHT "99" LF LF ESC LINEFEEDREV LF LF LF LF ESC LINEFEEDFWD,
-                                        gprn_stream);
-                        if (code != 14)
-                        {
-                                errprintf(pdev->memory, ERRRESETHACK);
-                                code = gs_note_error(gs_error_ioerror);
-                                goto xit;
-                        }
-                }
-
-                /* Formfeed and Reset printer */
-                code = gp_fputs(ESC LINEHEIGHT "16" FF ESC BIDIRECTIONAL ESC LINE8PI ESC ELITE,
-                        gprn_stream);
-
-                if (code != 11)
-                {
-                        errprintf(pdev->memory, ERRRESET);
-                        code = gs_note_error(gs_error_ioerror);
-                        goto xit;
-                }
-        }
-
+        
         /* gp_fflush(...) returns void */
         gp_fflush(gprn_stream);
 
         code = gs_error_ok;
 
 xit:
-        gs_free(pdev->memory, (char*)prn, in_size_mono * 3, 1, "admp_print_page(prn)");
-        gs_free(pdev->memory, (char*)buf_out, in_size_mono * pdev->color_info.num_components, 1, "admp_print_page(buf_out)");
-        gs_free(pdev->memory, (char*)buf_in, in_size_mono * pdev->color_info.num_components, 1, "admp_print_page(buf_in)");
-//        gs_free(pdev->memory, (char*)buf_k, in_size_mono * 3, 1, "admp_print_page(buf_k)");
-        if (gx_device_has_color(pdev))
-        {
-                gs_free(pdev->memory, (char*)buf_m, in_size_mono * 3, 1, "admp_print_page(buf_m)");
-                gs_free(pdev->memory, (char*)buf_c, in_size_mono * 3, 1, "admp_print_page(buf_c)");
-                gs_free(pdev->memory, (char*)buf_y, in_size_mono * 3, 1, "admp_print_page(buf_y)");
-        }
+        /* gs_free returns void */
+        gs_free(pdev->memory, (char*)prn, in_size * 3, 1, "admp_print_page(prn)");
+        gs_free(pdev->memory, (char*)buf_out, in_size /* * 3 */, 1, "admp_print_page(buf_out)");
+        gs_free(pdev->memory, (char*)buf_in, in_size, 1, "admp_print_page(buf_in)");
+        gs_free(pdev->memory, (char*)row, line_size, 1, "admp_print_page(row)");
+
         return_error(code);
-        }
+}
